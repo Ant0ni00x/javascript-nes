@@ -1,0 +1,23 @@
+export class Controller {
+  constructor() {
+    this.state = new Array(8).fill(0x40);
+  }
+
+  buttonDown(key) {
+    this.state[key] = 0x41;
+  }
+
+  buttonUp(key) {
+    this.state[key] = 0x40;
+  }
+}
+
+// Static Constants
+Controller.BUTTON_A = 0;
+Controller.BUTTON_B = 1;
+Controller.BUTTON_SELECT = 2;
+Controller.BUTTON_START = 3;
+Controller.BUTTON_UP = 4;
+Controller.BUTTON_DOWN = 5;
+Controller.BUTTON_LEFT = 6;
+Controller.BUTTON_RIGHT = 7;
