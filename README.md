@@ -1,4 +1,4 @@
-# JavaScript-NES - Modernized JavaScript NES Emulator
+# JavaScript-NES - Modernized
 
 A modernized Nintendo Entertainment System (NES) emulator written in JavaScript. This is a heavily refactored fork featuring ES6 modules, accurate mapper implementations, modern Web Audio API support, and an overhauled user interface.
 
