@@ -1,6 +1,6 @@
-# JSNES Technical Documentation
+# JavaScript-NES Technical Documentation
 
-This document covers the internal architecture and key implementation details of the JSNES emulator.
+This document covers the internal architecture and key implementation details of the JavaScript-NES emulator.
 
 ## Table of Contents
 
