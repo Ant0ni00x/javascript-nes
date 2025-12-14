@@ -1,1231 +1,2097 @@
-import { Tile } from "./tile.js";
-import { toJSON, fromJSON } from "./utils.js";
+import { copyArrayElements } from "./utils.js";
 
-export class PPU {
+/**
+ * Base Mapper (Mapper 0 / NROM)
+ */
+export class Mapper {
   constructor(nes) {
     this.nes = nes;
+    // Flag for mappers that need extra tile fetches (MMC2, MMC4)
+    this.hasLatch = false;
 
-    this.a12 = 0;   // Track last A12 state for MMC3 IRQ edge detection
-
-    // Status flags
-    this.STATUS_VRAMWRITE = 4;
-    this.STATUS_SLSPRITECOUNT = 5;
-    this.STATUS_SPRITE0HIT = 6;
-    this.STATUS_VBLANK = 7;
-
-    // JSON Properties
-    this.JSON_PROPERTIES = [
-      "vramMem", "spriteMem", "cntFV", "cntV", "cntH", "cntVT", "cntHT",
-      "regFV", "regV", "regH", "regVT", "regHT", "regFH", "regS",
-      "vramAddress", "vramTmpAddress", "f_nmiOnVblank", "f_spriteSize",
-      "f_bgPatternTable", "f_spPatternTable", "f_addrInc", "f_nTblAddress",
-      "f_color", "f_spVisibility", "f_bgVisibility", "f_spClipping",
-      "f_bgClipping", "f_dispType", "vramBufferedReadValue", "firstWrite",
-      "currentMirroring", "vramMirrorTable", "ntable1", "sramAddress",
-      "hitSpr0", "sprPalette", "imgPalette", "curX", "scanline",
-      "lastRenderedScanline", "curNt", "scantile", "attrib", "buffer",
-      "bgbuffer", "pixrendered", "requestEndFrame", "nmiOk",
-      "dummyCycleToggle", "nmiCounter", "validTileData", "scanlineAlreadyRendered"
-    ];
-
-    // Rendering Options:
-    this.showSpr0Hit = false;
-    this.clipToTvSize = true;
-
-    this.reset();
+    // Mapper Flags For Proper Gating In PPU
+    this.hasMMC1Features = false;
+    this.hasMMC2Features = false;
+    this.hasMMC3Features = false;
+    this.hasMMC5Features = false;
   }
 
   reset() {
-    this.vramMem = new Array(0x8000).fill(0);
-    this.spriteMem = new Array(0x100).fill(0);
-
-    this.vramAddress = null;
-    this.vramTmpAddress = null;
-    this.vramBufferedReadValue = 0;
-    this.firstWrite = true;
-    this.sramAddress = 0;
-    this.currentMirroring = -1;
-    this.requestEndFrame = false;
-    this.nmiOk = false;
-    this.dummyCycleToggle = false;
-    this.validTileData = false;
-    this.nmiCounter = 0;
-    this.scanlineAlreadyRendered = null;
-
-    this.f_nmiOnVblank = 0;
-    this.f_spriteSize = 0;
-    this.f_bgPatternTable = 0;
-    this.f_spPatternTable = 0;
-    this.f_addrInc = 0;
-    this.f_nTblAddress = 0;
-
-    this.f_color = 0;
-    this.f_spVisibility = 0;
-    this.f_bgVisibility = 0;
-    this.f_spClipping = 0;
-    this.f_bgClipping = 0;
-    this.f_dispType = 0;
-
-    this.cntFV = 0; this.cntV = 0; this.cntH = 0; this.cntVT = 0; this.cntHT = 0;
-    this.regFV = 0; this.regV = 0; this.regH = 0; this.regVT = 0; this.regHT = 0;
-    this.regFH = 0; this.regS = 0;
-
-    this.curNt = null;
-    this.attrib = new Array(32);
-    this.buffer = new Array(256 * 240);
-    this.bgbuffer = new Array(256 * 240);
-    this.pixrendered = new Array(256 * 240);
-    this.scantile = new Array(32);
-
-    this.scanline = 0;
-    this.lastRenderedScanline = -1;
-    this.curX = 0;
-
-    this.sprX = new Array(64);
-    this.sprY = new Array(64);
-    this.sprTile = new Array(64);
-    this.sprCol = new Array(64);
-    this.vertFlip = new Array(64);
-    this.horiFlip = new Array(64);
-    this.bgPriority = new Array(64);
-    this.spr0HitX = 0;
-    this.spr0HitY = 0;
-    this.hitSpr0 = false;
-
-    this.sprPalette = new Array(16);
-    this.imgPalette = new Array(16);
-
-    this.ptTile = new Array(512);
-    for (let i = 0; i < 512; i++) {
-      this.ptTile[i] = new Tile();
-    }
-
-    this.ntable1 = new Array(4);
-    this.nameTable = new Array(4);
-    for (let i = 0; i < 4; i++) {
-      this.nameTable[i] = new NameTable(32, 32, "Nt" + i);
-    }
-
-    this.vramMirrorTable = new Array(0x8000);
-    for (let i = 0; i < 0x8000; i++) {
-      this.vramMirrorTable[i] = i;
-    }
-
-    this.palTable = new PaletteTable();
-    this.palTable.loadNTSCPalette();
-
-    this.updateControlReg1(0);
-    this.updateControlReg2(0);
+    this.joy1StrobeState = 0;
+    this.joy2StrobeState = 0;
+    this.joypadLastWrite = 0;
+    this.zapperFired = false;
+    this.zapperX = null;
+    this.zapperY = null;
   }
 
-  setMirroring(mirroring) {
-    if (mirroring === this.currentMirroring) return;
-    this.currentMirroring = mirroring;
-    this.triggerRendering();
-
-    if (this.vramMirrorTable === null) {
-      this.vramMirrorTable = new Array(0x8000);
-    }
-    for (let i = 0; i < 0x8000; i++) {
-      this.vramMirrorTable[i] = i;
-    }
-
-    this.defineMirrorRegion(0x3f20, 0x3f00, 0x20);
-    this.defineMirrorRegion(0x3f40, 0x3f00, 0x20);
-    this.defineMirrorRegion(0x3f80, 0x3f00, 0x20);
-    this.defineMirrorRegion(0x3fc0, 0x3f00, 0x20);
-    this.defineMirrorRegion(0x3000, 0x2000, 0xf00);
-    this.defineMirrorRegion(0x4000, 0x0000, 0x4000);
-
-    if (mirroring === this.nes.rom.HORIZONTAL_MIRRORING) {
-      this.ntable1[0] = 0; this.ntable1[1] = 0;
-      this.ntable1[2] = 1; this.ntable1[3] = 1;
-      this.defineMirrorRegion(0x2400, 0x2000, 0x400);
-      this.defineMirrorRegion(0x2c00, 0x2800, 0x400);
-    } else if (mirroring === this.nes.rom.VERTICAL_MIRRORING) {
-      this.ntable1[0] = 0; this.ntable1[1] = 1;
-      this.ntable1[2] = 0; this.ntable1[3] = 1;
-      this.defineMirrorRegion(0x2800, 0x2000, 0x400);
-      this.defineMirrorRegion(0x2c00, 0x2400, 0x400);
-    } else if (mirroring === this.nes.rom.SINGLESCREEN_MIRRORING) {
-      this.ntable1[0] = 0; this.ntable1[1] = 0;
-      this.ntable1[2] = 0; this.ntable1[3] = 0;
-      this.defineMirrorRegion(0x2400, 0x2000, 0x400);
-      this.defineMirrorRegion(0x2800, 0x2000, 0x400);
-      this.defineMirrorRegion(0x2c00, 0x2000, 0x400);
-    } else if (mirroring === this.nes.rom.SINGLESCREEN_MIRRORING2) {
-      this.ntable1[0] = 1; this.ntable1[1] = 1;
-      this.ntable1[2] = 1; this.ntable1[3] = 1;
-      this.defineMirrorRegion(0x2400, 0x2400, 0x400);
-      this.defineMirrorRegion(0x2800, 0x2400, 0x400);
-      this.defineMirrorRegion(0x2c00, 0x2400, 0x400);
-    } else {
-      this.ntable1[0] = 0; this.ntable1[1] = 1;
-      this.ntable1[2] = 2; this.ntable1[3] = 3;
-    }
-  }
-
-  defineMirrorRegion(fromStart, toStart, size) {
-    for (let i = 0; i < size; i++) {
-      this.vramMirrorTable[fromStart + i] = toStart + i;
-    }
-  }
-
-  startVBlank() {
-    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_NMI);
-    if (this.lastRenderedScanline < 239) {
-      this.renderFramePartially(this.lastRenderedScanline + 1, 240 - this.lastRenderedScanline);
-    }
-    this.endFrame();
-    this.lastRenderedScanline = -1;
-  }
-
-  endScanline() {
-    switch (this.scanline) {
-      case 19:
-        // Dummy scanline.
-        // May be variable length:
-        if (this.dummyCycleToggle) {
-          // Remove dead cycle at end of scanline,
-          // for next scanline:
-          this.curX = 1;
-          this.dummyCycleToggle = !this.dummyCycleToggle;
-        }
-        break;
-
-      case 20:
-        // Clear VBlank flag:
-        this.setStatusFlag(this.STATUS_VBLANK, false);
-
-        // Clear Sprite #0 hit flag:
-        this.setStatusFlag(this.STATUS_SPRITE0HIT, false);
-        this.hitSpr0 = false;
-        this.spr0HitX = -1;
-        this.spr0HitY = -1;
-
-        if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
-          // Update counters:
-          this.cntFV = this.regFV;
-          this.cntV = this.regV;
-          this.cntH = this.regH;
-          this.cntVT = this.regVT;
-          this.cntHT = this.regHT;
-
-          // --- MMC2 FIX: Pre-render Sprites for Scanline 0 ---
-          // This must happen BEFORE the BG is rendered for Line 0, so that the 
-          // MMC2 latches are set correctly by the magic sprites on the pre-render line.
-
-          if (this.f_spVisibility === 1) {
-            // Render "dummy" sprites for the first visible line (line 0)
-            // The output is discarded/overwritten, but the Mapper Latches are triggered.
-            this.renderSpritesPartially(0, 1, true);
-            this.renderSpritesPartially(0, 1, false);
-          }
-          // ---------------------------------------------------
-
-          if (this.f_bgVisibility === 1) {
-            // Render dummy scanline:
-            this.renderBgScanline(false, 0);
-          }
-        }
-
-        if (this.f_bgVisibility === 1 && this.f_spVisibility === 1) {
-          // Check sprite 0 hit for first scanline:
-          this.checkSprite0(0);
-        }
-
-        if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
-          // Clock mapper IRQ Counter:
-          this.nes.mmap.clockIrqCounter();
-        }
-        break;
-
-      case 261:
-        // Dead scanline, no rendering.
-        // Set VINT:
-        this.setStatusFlag(this.STATUS_VBLANK, true);
-        this.requestEndFrame = true;
-        this.nmiCounter = 9;
-
-        // Wrap around:
-        this.scanline = -1; // will be incremented to 0
-
-        break;
-
-      default:
-        if (this.scanline >= 21 && this.scanline <= 260) {
-          // Render normally:
-          if (this.f_bgVisibility === 1) {
-            // --- SYNC FIX: Render sprites before processing BG latches ---
-            if (this.nes.mmap.isMMC2) {
-              this.triggerRendering();
-            }
-            // -------------------------------------------------------------
-
-            if (!this.scanlineAlreadyRendered) {
-              // update scroll:
-              this.cntHT = this.regHT;
-              this.cntH = this.regH;
-              this.renderBgScanline(true, this.scanline + 1 - 21);
-            }
-            this.scanlineAlreadyRendered = false;
-
-            // Check for sprite 0 (next scanline):
-            if (!this.hitSpr0 && this.f_spVisibility === 1) {
-              if (
-                this.sprX[0] >= -7 &&
-                this.sprX[0] < 256 &&
-                this.sprY[0] + 1 <= this.scanline - 20 &&
-                this.sprY[0] + 1 + (this.f_spriteSize === 0 ? 8 : 16) >=
-                this.scanline - 20
-              ) {
-                if (this.checkSprite0(this.scanline - 20)) {
-                  this.hitSpr0 = true;
-                }
-              }
-            }
-          }
-          if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
-            // Clock mapper IRQ Counter:
-            // this.nes.mmap.clockIrqCounter();
-          }
-        }
-    }
-
-    this.scanline++;
-    this.regsToAddress();
-    this.cntsToAddress();
-  }
-
-  startFrame() {
-    let bgColor = 0;
-    if (this.f_dispType === 0) {
-      bgColor = this.imgPalette[0];
-    } else {
-      switch (this.f_color) {
-        case 0: bgColor = 0x00000; break;
-        case 1: bgColor = 0x00ff00; break;
-        case 2: bgColor = 0xff0000; break;
-        case 3: bgColor = 0x000000; break;
-        case 4: bgColor = 0x0000ff; break;
-        default: bgColor = 0x0;
-      }
-    }
-    const buffer = this.buffer;
-    for (let i = 0; i < 256 * 240; i++) buffer[i] = bgColor;
-    const pixrendered = this.pixrendered;
-    for (let i = 0; i < pixrendered.length; i++) pixrendered[i] = 65;
-  }
-
-  endFrame() {
-    let i, x, y;
-    const buffer = this.buffer;
-    if (this.showSpr0Hit) {
-      if (this.sprX[0] >= 0 && this.sprX[0] < 256 && this.sprY[0] >= 0 && this.sprY[0] < 240) {
-        for (i = 0; i < 256; i++) buffer[(this.sprY[0] << 8) + i] = 0xff5555;
-        for (i = 0; i < 240; i++) buffer[(i << 8) + this.sprX[0]] = 0xff5555;
-      }
-      if (this.spr0HitX >= 0 && this.spr0HitX < 256 && this.spr0HitY >= 0 && this.spr0HitY < 240) {
-        for (i = 0; i < 256; i++) buffer[(this.spr0HitY << 8) + i] = 0x55ff55;
-        for (i = 0; i < 240; i++) buffer[(i << 8) + this.spr0HitX] = 0x55ff55;
-      }
-    }
-    if (this.clipToTvSize || this.f_bgClipping === 0 || this.f_spClipping === 0) {
-      for (y = 0; y < 240; y++) for (x = 0; x < 8; x++) buffer[(y << 8) + x] = 0;
-    }
-    if (this.clipToTvSize) {
-      for (y = 0; y < 240; y++) for (x = 0; x < 8; x++) buffer[(y << 8) + 255 - x] = 0;
-      for (y = 0; y < 8; y++) for (x = 0; x < 256; x++) {
-        buffer[(y << 8) + x] = 0;
-        buffer[((239 - y) << 8) + x] = 0;
-      }
-    }
-    this.nes.ui.writeFrame(buffer);
-  }
-
-  updateControlReg1(value) {
-    this.triggerRendering();
-    this.f_nmiOnVblank = (value >> 7) & 1;
-    this.f_spriteSize = (value >> 5) & 1;
-    this.f_bgPatternTable = (value >> 4) & 1;
-    this.f_spPatternTable = (value >> 3) & 1;
-    this.f_addrInc = (value >> 2) & 1;
-    this.f_nTblAddress = value & 3;
-    this.regV = (value >> 1) & 1;
-    this.regH = value & 1;
-    this.regS = (value >> 4) & 1;
-  }
-
-  updateControlReg2(value) {
-    this.triggerRendering();
-    this.f_color = (value >> 5) & 7;
-    this.f_spVisibility = (value >> 4) & 1;
-    this.f_bgVisibility = (value >> 3) & 1;
-    this.f_spClipping = (value >> 2) & 1;
-    this.f_bgClipping = (value >> 1) & 1;
-    this.f_dispType = value & 1;
-    if (this.f_dispType === 0) this.palTable.setEmphasis(this.f_color);
-    this.updatePalettes();
-  }
-
-  setStatusFlag(flag, value) {
-    const n = 1 << flag;
-    this.nes.cpu.mem[0x2002] = (this.nes.cpu.mem[0x2002] & (255 - n)) | (value ? n : 0);
-  }
-
-  readStatusRegister() {
-    const tmp = this.nes.cpu.mem[0x2002];
-    this.firstWrite = true;
-    this.setStatusFlag(this.STATUS_VBLANK, false);
-    return tmp;
-  }
-
-  writeSRAMAddress(address) { this.sramAddress = address; }
-  sramLoad() { return this.spriteMem[this.sramAddress]; }
-  sramWrite(value) {
-    this.spriteMem[this.sramAddress] = value;
-    this.spriteRamWriteUpdate(this.sramAddress, value);
-    this.sramAddress++;
-    this.sramAddress %= 0x100;
-  }
-
-  scrollWrite(value) {
-    this.triggerRendering();
-    if (this.firstWrite) {
-      this.regHT = (value >> 3) & 31;
-      this.regFH = value & 7;
-    } else {
-      this.regFV = value & 7;
-      this.regVT = (value >> 3) & 31;
-    }
-    this.firstWrite = !this.firstWrite;
-  }
-
-  writeVRAMAddress(address) {
-    if (this.firstWrite) {
-      this.regFV = (address >> 4) & 3;
-      this.regV = (address >> 3) & 1;
-      this.regH = (address >> 2) & 1;
-      this.regVT = (this.regVT & 7) | ((address & 3) << 3);
-    } else {
-      this.triggerRendering();
-      this.regVT = (this.regVT & 24) | ((address >> 5) & 7);
-      this.regHT = address & 31;
-      this.cntFV = this.regFV; this.cntV = this.regV;
-      this.cntH = this.regH; this.cntVT = this.regVT; this.cntHT = this.regHT;
-      this.checkSprite0(this.scanline - 20);
-    }
-    this.firstWrite = !this.firstWrite;
-    this.cntsToAddress();
-    if (this.vramAddress < 0x2000) this.nes.mmap.latchAccess(this.vramAddress);
-  }
-
-  vramLoad() {
-    let tmp;
-    this.cntsToAddress();
-    this.regsToAddress();
-    if (this.vramAddress <= 0x3eff) {
-      tmp = this.vramBufferedReadValue;
-      if (this.vramAddress < 0x2000) this.vramBufferedReadValue = this.vramMem[this.vramAddress];
-      else this.vramBufferedReadValue = this.mirroredLoad(this.vramAddress);
-      if (this.vramAddress < 0x2000) this.nes.mmap.latchAccess(this.vramAddress);
-      this.vramAddress += this.f_addrInc === 1 ? 32 : 1;
-      this.cntsFromAddress(); this.regsFromAddress();
-      return tmp;
-    }
-    tmp = this.mirroredLoad(this.vramAddress);
-    this.vramAddress += this.f_addrInc === 1 ? 32 : 1;
-    this.cntsFromAddress(); this.regsFromAddress();
-    return tmp;
-  }
-
-  vramWrite(value) {
-    this.triggerRendering();
-    this.cntsToAddress();
-    this.regsToAddress();
-    if (this.vramAddress >= 0x2000) this.mirroredWrite(this.vramAddress, value);
-    else {
-      this.writeMem(this.vramAddress, value);
-      this.nes.mmap.latchAccess(this.vramAddress);
-    }
-    this.vramAddress += this.f_addrInc === 1 ? 32 : 1;
-    this.regsFromAddress();
-    this.cntsFromAddress();
-  }
-
-  sramDMA(value) {
-    const baseAddress = value * 0x100;
-    let data;
-    for (let i = this.sramAddress; i < 256; i++) {
-      data = this.nes.cpu.mem[baseAddress + i];
-      this.spriteMem[i] = data;
-      this.spriteRamWriteUpdate(i, data);
-    }
-    this.nes.cpu.haltCycles(513);
-  }
-
-  regsFromAddress() {
-    let address = (this.vramTmpAddress >> 8) & 0xff;
-    this.regFV = (address >> 4) & 7;
-    this.regV = (address >> 3) & 1;
-    this.regH = (address >> 2) & 1;
-    this.regVT = (this.regVT & 7) | ((address & 3) << 3);
-    address = this.vramTmpAddress & 0xff;
-    this.regVT = (this.regVT & 24) | ((address >> 5) & 7);
-    this.regHT = address & 31;
-  }
-
-  cntsFromAddress() {
-    let address = (this.vramAddress >> 8) & 0xff;
-    this.cntFV = (address >> 4) & 3;
-    this.cntV = (address >> 3) & 1;
-    this.cntH = (address >> 2) & 1;
-    this.cntVT = (this.cntVT & 7) | ((address & 3) << 3);
-    address = this.vramAddress & 0xff;
-    this.cntVT = (this.cntVT & 24) | ((address >> 5) & 7);
-    this.cntHT = address & 31;
-  }
-
-  regsToAddress() {
-    let b1 = (this.regFV & 7) << 4;
-    b1 |= (this.regV & 1) << 3;
-    b1 |= (this.regH & 1) << 2;
-    b1 |= (this.regVT >> 3) & 3;
-    let b2 = (this.regVT & 7) << 5;
-    b2 |= this.regHT & 31;
-    this.vramTmpAddress = ((b1 << 8) | b2) & 0x7fff;
-  }
-
-  cntsToAddress() {
-    let b1 = (this.cntFV & 7) << 4;
-    b1 |= (this.cntV & 1) << 3;
-    b1 |= (this.cntH & 1) << 2;
-    b1 |= (this.cntVT >> 3) & 3;
-    let b2 = (this.cntVT & 7) << 5;
-    b2 |= this.cntHT & 31;
-    this.vramAddress = ((b1 << 8) | b2) & 0x7fff;
-  }
-
-  incTileCounter(count) {
-    for (let i = count; i !== 0; i--) {
-      this.cntHT++;
-      if (this.cntHT === 32) {
-        this.cntHT = 0;
-        this.cntVT++;
-        if (this.cntVT >= 30) {
-          this.cntH++;
-          if (this.cntH === 2) {
-            this.cntH = 0;
-            this.cntV++;
-            if (this.cntV === 2) {
-              this.cntV = 0;
-              this.cntFV++;
-              this.cntFV &= 0x7;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  mirroredLoad(address) {
-    return this.vramMem[this.vramMirrorTable[address]];
-  }
-
-  mirroredWrite(address, value) {
-    if (address >= 0x3f00 && address < 0x3f20) {
-      if (address === 0x3f00 || address === 0x3f10) { this.writeMem(0x3f00, value); this.writeMem(0x3f10, value); }
-      else if (address === 0x3f04 || address === 0x3f14) { this.writeMem(0x3f04, value); this.writeMem(0x3f14, value); }
-      else if (address === 0x3f08 || address === 0x3f18) { this.writeMem(0x3f08, value); this.writeMem(0x3f18, value); }
-      else if (address === 0x3f0c || address === 0x3f1c) { this.writeMem(0x3f0c, value); this.writeMem(0x3f1c, value); }
-      else this.writeMem(address, value);
-    } else {
-      if (address < this.vramMirrorTable.length) this.writeMem(this.vramMirrorTable[address], value);
-      else throw new Error("Invalid VRAM address: " + address.toString(16));
-    }
-  }
-
-  triggerRendering() {
-    if (this.scanline >= 21 && this.scanline <= 260) {
-      this.renderFramePartially(this.lastRenderedScanline + 1, this.scanline - 21 - this.lastRenderedScanline);
-      this.lastRenderedScanline = this.scanline - 21;
-    }
-  }
-
-  renderFramePartially(startScan, scanCount) {
-    if (this.f_spVisibility === 1) this.renderSpritesPartially(startScan, scanCount, true);
-    if (this.f_bgVisibility === 1) {
-      const si = startScan << 8;
-      let ei = (startScan + scanCount) << 8;
-      if (ei > 0xf000) ei = 0xf000;
-      const buffer = this.buffer;
-      const bgbuffer = this.bgbuffer;
-      const pixrendered = this.pixrendered;
-      for (let destIndex = si; destIndex < ei; destIndex++) {
-        if (pixrendered[destIndex] > 0xff) buffer[destIndex] = bgbuffer[destIndex];
-      }
-    }
-    if (this.f_spVisibility === 1) this.renderSpritesPartially(startScan, scanCount, false);
-    this.validTileData = false;
-  }
-
-  renderBgScanline(bgbuffer, scan) {
-    var isMMC2 = this.nes.rom && this.nes.rom.mapperType === 9;
-    var baseTile = this.regS === 0 ? 0 : 256;
-    var destIndex = (scan << 8) - this.regFH;
-
-    // --- MMC3 A12 Signaling ---
-    // Signal A12 for BG pattern table at start of BG rendering.
-    // This creates the low state before sprite fetches cause the rising edge.
-    var mmap = this.nes.mmap;
-    if (mmap && typeof mmap.notifyA12 === "function") {
-      mmap.notifyA12(this.f_bgPatternTable);
-    }
-    // --- End MMC3 A12 Signaling ---
-
-    this.curNt = this.ntable1[this.cntV + this.cntV + this.cntH];
-
-    this.cntHT = this.regHT;
-    this.cntH = this.regH;
-    this.curNt = this.ntable1[this.cntV + this.cntV + this.cntH];
-
-    if (scan < 240 && scan - this.cntFV >= 0) {
-      var tscanoffset = this.cntFV << 3;
-      var scantile = this.scantile;
-      var attrib = this.attrib;
-      var ptTile = this.ptTile;
-      var nameTable = this.nameTable;
-      var imgPalette = this.imgPalette;
-      var pixrendered = this.pixrendered;
-      var targetBuffer = bgbuffer ? this.bgbuffer : this.buffer;
-
-      var t, tpix, att, col;
-
-      // Setting tileCount to 33 fixes MMC2 issues with extended tiles
-      var tileCount = isMMC2 ? 33 : 32;
-
-      for (var tile = 0; tile < tileCount; tile++) {
-        if (scan >= 0) {
-          // Fetch tile & attrib data:
-          if (this.validTileData) {
-            // Get data from array:
-            t = scantile[tile];
-            if (typeof t === "undefined") {
-              continue;
-            }
-            tpix = t.pix;
-            att = attrib[tile];
-          } else {
-            // Fetch data:
-            var tileIndex = nameTable[this.curNt].getTileIndex(this.cntHT, this.cntVT);
-
-            t = ptTile[baseTile + tileIndex];
-
-            // --- MMC2 Latch Trigger (Start) ---
-            // Trigger AFTER fetching tile data so the NEXT tile sees the new bank
-            if (this.nes.mmap && this.nes.mmap.latchAccess) {
-              this.nes.mmap.latchAccess((baseTile === 0 ? 0x0000 : 0x1000) + (tileIndex << 4));
-            }
-            // --- MMC2 Latch Trigger (End) ---
-            if (typeof t === "undefined") {
-              continue;
-            }
-            tpix = t.pix;
-            att = nameTable[this.curNt].getAttrib(this.cntHT, this.cntVT);
-            scantile[tile] = t;
-            attrib[tile] = att;
-          }
-
-          // Render tile scanline:
-          var sx = 0;
-          var x = (tile << 3) - this.regFH;
-
-          if (x > -8) {
-            if (x < 0) {
-              destIndex -= x;
-              sx = -x;
-            }
-            if (t.opaque[this.cntFV]) {
-              for (; sx < 8; sx++) {
-                targetBuffer[destIndex] =
-                  imgPalette[tpix[tscanoffset + sx] + att];
-                pixrendered[destIndex] |= 256;
-                destIndex++;
-              }
-            } else {
-              for (; sx < 8; sx++) {
-                col = tpix[tscanoffset + sx];
-                if (col !== 0) {
-                  targetBuffer[destIndex] = imgPalette[col + att];
-                  pixrendered[destIndex] |= 256;
-                }
-                destIndex++;
-              }
-            }
-          }
-        }
-
-        // Increase Horizontal Tile Counter:
-        if (++this.cntHT === 32) {
-          this.cntHT = 0;
-          this.cntH++;
-          this.cntH %= 2;
-          this.curNt = this.ntable1[(this.cntV << 1) + this.cntH];
-        }
-      }
-
-      // Tile data for one row should now have been fetched,
-      // so the data in the array is valid.
-      this.validTileData = true;
-    }
-
-    // update vertical scroll:
-    this.cntFV++;
-    if (this.cntFV === 8) {
-      this.cntFV = 0;
-      this.cntVT++;
-      if (this.cntVT === 30) {
-        this.cntVT = 0;
-        this.cntV++;
-        this.cntV %= 2;
-        this.curNt = this.ntable1[(this.cntV << 1) + this.cntH];
-      } else if (this.cntVT === 32) {
-        this.cntVT = 0;
-      }
-
-      // Invalidate fetched data:
-      // --- MMC2 FIX: Disable optimization to force latch access every scanline ---
-      this.validTileData = false;
-      // --------------------------------------------------------------------------
-    }
-  }
-
-  renderSpritesPartially(startscan, scancount, bgPri) {
-    if (this.f_spVisibility === 1) {
-      // --- MMC3 A12 Signaling ---
-      // Signal A12 transitions for sprite pattern fetches.
-      // On real hardware, sprite fetches cause A12 to reflect the sprite pattern table.
-      // This is critical for MMC3 scanline counter timing.
-      var mmap = this.nes.mmap;
-      if (mmap && typeof mmap.notifyA12 === "function") {
-        // Signal the sprite pattern table address (A12 = 1 for $1000, 0 for $0000)
-        // For 8x8 sprites, it's based on f_spPatternTable
-        // For 8x16 sprites, each sprite can use either bank, but typically
-        // the first sprite fetch triggers the A12 transition
-        if (this.f_spriteSize === 0) {
-          // 8x8 sprites use the configured pattern table
-          mmap.notifyA12(this.f_spPatternTable);
-        } else {
-          // 8x16 sprites - signal based on first visible sprite's bank
-          // Default to A12=1 which is typical for SMB3 (sprites use $1000)
-          var signaled = false;
-          for (var j = 0; j < 64; j++) {
-            if (this.sprY[j] + 16 >= startscan && this.sprY[j] < startscan + scancount) {
-              var spriteBank = (this.sprTile[j] & 1) ? 1 : 0;
-              mmap.notifyA12(spriteBank);
-              signaled = true;
-              break;
-            }
-          }
-          // If no visible sprites, still signal A12=1 (PPU still fetches from $1000 area)
-          if (!signaled) {
-            mmap.notifyA12(1);
-          }
-        }
-      }
-      // --- End MMC3 A12 Signaling ---
-
-      for (var i = 0; i < 64; i++) {
-        // --- MMC2 Latch Trigger (Start) ---
-        // Latch MUST trigger for every sprite on the scanline, 
-        // regardless of priority (bgPri) or visibility.
-        // We do this check first.
-
-        // Use correct sprite height (8 or 16) for visibility check
-        var latchSpriteHeight = (this.f_spriteSize === 0) ? 8 : 16;
-        if (
-          this.sprY[i] + latchSpriteHeight >= startscan &&
-          this.sprY[i] < startscan + scancount
-        ) {
-          if (this.nes.mmap && this.nes.mmap.latchAccess) {
-            if (this.f_spriteSize === 0) {
-              // 8x8
-              var bankBase = (this.f_spPatternTable === 0) ? 0x0000 : 0x1000;
-              this.nes.mmap.latchAccess(bankBase + (this.sprTile[i] << 4));
-            } else {
-              // 8x16
-              var top = this.sprTile[i];
-              var bank = (top & 1) ? 0x1000 : 0x0000;
-              var topTileIndex = top & 0xFE;
-              this.nes.mmap.latchAccess(bank + (topTileIndex << 4)); // Top
-              this.nes.mmap.latchAccess(bank + ((topTileIndex + 1) << 4)); // Bottom
-            }
-          }
-        }
-        // --- MMC2 Latch Trigger (End) ---
-
-        // Calculate sprite height based on sprite size mode
-        var spriteHeight = (this.f_spriteSize === 0) ? 8 : 16;
-
-        if (
-          this.bgPriority[i] === bgPri &&
-          this.sprX[i] >= 0 &&
-          this.sprX[i] < 256 &&
-          this.sprY[i] + spriteHeight >= startscan &&
-          this.sprY[i] < startscan + scancount
-        ) {
-          // Show sprite.
-          if (this.f_spriteSize === 0) {
-            // 8x8 sprites
-            this.srcy1 = 0;
-            this.srcy2 = 8;
-
-            if (this.sprY[i] < startscan) {
-              this.srcy1 = startscan - this.sprY[i] - 1;
-            }
-
-            if (this.sprY[i] + 8 > startscan + scancount) {
-              this.srcy2 = startscan + scancount - this.sprY[i] + 1;
-            }
-
-            var tileIndex = this.sprTile[i] + (this.f_spPatternTable === 0 ? 0 : 256);
-            var t = this.ptTile[tileIndex];
-
-            // Safety check: Only render if tile exists
-            if (t) {
-              t.render(
-                this.buffer,
-                0,
-                this.srcy1,
-                8,
-                this.srcy2,
-                this.sprX[i],
-                this.sprY[i] + 1,
-                this.sprCol[i],
-                this.sprPalette,
-                this.horiFlip[i],
-                this.vertFlip[i],
-                i,
-                this.pixrendered
-              );
-            }
-          } else {
-            // 8x16 sprites
-            var top = this.sprTile[i];
-
-            if ((top & 1) !== 0) {
-              top = this.sprTile[i] - 1 + 256;
-            }
-
-            var srcy1 = 0;
-            var srcy2 = 8;
-
-            if (this.sprY[i] < startscan) {
-              srcy1 = startscan - this.sprY[i] - 1;
-            }
-
-            if (this.sprY[i] + 8 > startscan + scancount) {
-              srcy2 = startscan + scancount - this.sprY[i];
-            }
-
-            var t1 = this.ptTile[top + (this.vertFlip[i] ? 1 : 0)];
-            // Safety check: Only render if tile exists
-            if (t1) {
-              t1.render(
-                this.buffer,
-                0,
-                srcy1,
-                8,
-                srcy2,
-                this.sprX[i],
-                this.sprY[i] + 1,
-                this.sprCol[i],
-                this.sprPalette,
-                this.horiFlip[i],
-                this.vertFlip[i],
-                i,
-                this.pixrendered
-              );
-            }
-
-            srcy1 = 0;
-            srcy2 = 8;
-
-            if (this.sprY[i] + 8 < startscan) {
-              srcy1 = startscan - (this.sprY[i] + 8 + 1);
-            }
-
-            if (this.sprY[i] + 16 > startscan + scancount) {
-              srcy2 = startscan + scancount - (this.sprY[i] + 8);
-            }
-
-            var t2 = this.ptTile[top + (this.vertFlip[i] ? 0 : 1)];
-            // Safety check: Only render if tile exists
-            if (t2) {
-              t2.render(
-                this.buffer,
-                0,
-                srcy1,
-                8,
-                srcy2,
-                this.sprX[i],
-                this.sprY[i] + 1 + 8,
-                this.sprCol[i],
-                this.sprPalette,
-                this.horiFlip[i],
-                this.vertFlip[i],
-                i,
-                this.pixrendered
-              );
-            }
-          }
-        }
-      }
-    }
-  }
-
-  checkSprite0(scan) {
-    this.spr0HitX = -1;
-    this.spr0HitY = -1;
-
-    var toffset;
-    var tIndexAdd = this.f_spPatternTable === 0 ? 0 : 256;
-    var x, y, t, i;
-    var bufferIndex;
-
-    x = this.sprX[0];
-    y = this.sprY[0] + 1;
-
-    if (this.f_spriteSize === 0) {
-      // 8x8 sprites.
-
-      // Check range:
-      if (y <= scan && y + 8 > scan && x >= -7 && x < 256) {
-        // Sprite is in range.
-        // Draw scanline:
-        t = this.ptTile[this.sprTile[0] + tIndexAdd];
-
-        // --- SAFETY CHECK ---
-        if (!t) return false;
-        // --------------------
-
-        if (this.vertFlip[0]) {
-          toffset = 7 - (scan - y);
-        } else {
-          toffset = scan - y;
-        }
-        toffset *= 8;
-
-        bufferIndex = scan * 256 + x;
-        if (this.horiFlip[0]) {
-          for (i = 7; i >= 0; i--) {
-            if (x >= 0 && x < 256) {
-              if (
-                bufferIndex >= 0 &&
-                bufferIndex < 61440 &&
-                this.pixrendered[bufferIndex] !== 0
-              ) {
-                if (t.pix[toffset + i] !== 0) {
-                  this.spr0HitX = bufferIndex % 256;
-                  this.spr0HitY = scan;
-                  return true;
-                }
-              }
-            }
-            x++;
-            bufferIndex++;
-          }
-        } else {
-          for (i = 0; i < 8; i++) {
-            if (x >= 0 && x < 256) {
-              if (
-                bufferIndex >= 0 &&
-                bufferIndex < 61440 &&
-                this.pixrendered[bufferIndex] !== 0
-              ) {
-                if (t.pix[toffset + i] !== 0) {
-                  this.spr0HitX = bufferIndex % 256;
-                  this.spr0HitY = scan;
-                  return true;
-                }
-              }
-            }
-            x++;
-            bufferIndex++;
-          }
-        }
-      }
-    } else {
-      // 8x16 sprites:
-
-      // Check range:
-      if (y <= scan && y + 16 > scan && x >= -7 && x < 256) {
-        // Sprite is in range.
-        // Draw scanline:
-
-        if (this.vertFlip[0]) {
-          toffset = 15 - (scan - y);
-        } else {
-          toffset = scan - y;
-        }
-
-        if (toffset < 8) {
-          // first half of sprite.
-          t = this.ptTile[
-            this.sprTile[0] +
-            (this.vertFlip[0] ? 1 : 0) +
-            ((this.sprTile[0] & 1) !== 0 ? 255 : 0)
-          ];
-        } else {
-          // second half of sprite.
-          t = this.ptTile[
-            this.sprTile[0] +
-            (this.vertFlip[0] ? 0 : 1) +
-            ((this.sprTile[0] & 1) !== 0 ? 255 : 0)
-          ];
-          if (this.vertFlip[0]) {
-            toffset = 15 - toffset;
-          } else {
-            toffset -= 8;
-          }
-        }
-
-        // --- SAFETY CHECK ---
-        if (!t) return false;
-        // --------------------
-
-        toffset *= 8;
-
-        bufferIndex = scan * 256 + x;
-        if (this.horiFlip[0]) {
-          for (i = 7; i >= 0; i--) {
-            if (x >= 0 && x < 256) {
-              if (
-                bufferIndex >= 0 &&
-                bufferIndex < 61440 &&
-                this.pixrendered[bufferIndex] !== 0
-              ) {
-                if (t.pix[toffset + i] !== 0) {
-                  this.spr0HitX = bufferIndex % 256;
-                  this.spr0HitY = scan;
-                  return true;
-                }
-              }
-            }
-            x++;
-            bufferIndex++;
-          }
-        } else {
-          for (i = 0; i < 8; i++) {
-            if (x >= 0 && x < 256) {
-              if (
-                bufferIndex >= 0 &&
-                bufferIndex < 61440 &&
-                this.pixrendered[bufferIndex] !== 0
-              ) {
-                if (t.pix[toffset + i] !== 0) {
-                  this.spr0HitX = bufferIndex % 256;
-                  this.spr0HitY = scan;
-                  return true;
-                }
-              }
-            }
-            x++;
-            bufferIndex++;
-          }
-        }
-      }
-    }
-
-    return false;
-  }
-
-  _checkSpriteHitLoop(scan, x, t, toffset) {
-    let bufferIndex = scan * 256 + x;
-    if (this.horiFlip[0]) {
-      for (let i = 7; i >= 0; i--) {
-        if (x >= 0 && x < 256 && bufferIndex >= 0 && bufferIndex < 61440 && this.pixrendered[bufferIndex] !== 0) {
-          if (t.pix[toffset + i] !== 0) {
-            this.spr0HitX = bufferIndex % 256;
-            this.spr0HitY = scan;
-            return;
-          }
-        }
-        x++; bufferIndex++;
-      }
-    } else {
-      for (let i = 0; i < 8; i++) {
-        if (x >= 0 && x < 256 && bufferIndex >= 0 && bufferIndex < 61440 && this.pixrendered[bufferIndex] !== 0) {
-          if (t.pix[toffset + i] !== 0) {
-            this.spr0HitX = bufferIndex % 256;
-            this.spr0HitY = scan;
-            return;
-          }
-        }
-        x++; bufferIndex++;
-      }
-    }
-  }
-
-  writeMem(address, value) {
-    this.vramMem[address] = value;
+  write(address, value) {
     if (address < 0x2000) {
-      this.vramMem[address] = value;
-      this.patternWrite(address, value);
-    } else if (address >= 0x2000 && address < 0x23c0) this.nameTableWrite(this.ntable1[0], address - 0x2000, value);
-    else if (address >= 0x23c0 && address < 0x2400) this.attribTableWrite(this.ntable1[0], address - 0x23c0, value);
-    else if (address >= 0x2400 && address < 0x27c0) this.nameTableWrite(this.ntable1[1], address - 0x2400, value);
-    else if (address >= 0x27c0 && address < 0x2800) this.attribTableWrite(this.ntable1[1], address - 0x27c0, value);
-    else if (address >= 0x2800 && address < 0x2bc0) this.nameTableWrite(this.ntable1[2], address - 0x2800, value);
-    else if (address >= 0x2bc0 && address < 0x2c00) this.attribTableWrite(this.ntable1[2], address - 0x2bc0, value);
-    else if (address >= 0x2c00 && address < 0x2fc0) this.nameTableWrite(this.ntable1[3], address - 0x2c00, value);
-    else if (address >= 0x2fc0 && address < 0x3000) this.attribTableWrite(this.ntable1[3], address - 0x2fc0, value);
-    else if (address >= 0x3f00 && address < 0x3f20) this.updatePalettes();
-  }
-
-  updatePalettes() {
-    for (let i = 0; i < 16; i++) {
-      if (this.f_dispType === 0) this.imgPalette[i] = this.palTable.getEntry(this.vramMem[0x3f00 + i] & 63);
-      else this.imgPalette[i] = this.palTable.getEntry(this.vramMem[0x3f00 + i] & 32);
-    }
-    for (let i = 0; i < 16; i++) {
-      if (this.f_dispType === 0) this.sprPalette[i] = this.palTable.getEntry(this.vramMem[0x3f10 + i] & 63);
-      else this.sprPalette[i] = this.palTable.getEntry(this.vramMem[0x3f10 + i] & 32);
+      this.nes.cpu.mem[address & 0x7ff] = value;
+    } else if (address > 0x4017) {
+      this.nes.cpu.mem[address] = value;
+      if (address >= 0x6000 && address < 0x8000) {
+        this.nes.opts.onBatteryRamWrite(address, value);
+      }
+    } else if (address > 0x2007 && address < 0x4000) {
+      this.regWrite(0x2000 + (address & 0x7), value);
+    } else {
+      this.regWrite(address, value);
     }
   }
 
-  patternWrite(address, value) {
-    const tileIndex = Math.floor(address / 16);
-    const leftOver = address % 16;
-    if (leftOver < 8) this.ptTile[tileIndex].setScanline(leftOver, value, this.vramMem[address + 8]);
-    else this.ptTile[tileIndex].setScanline(leftOver - 8, this.vramMem[address - 8], value);
+  writelow(address, value) {
+    if (address < 0x2000) {
+      this.nes.cpu.mem[address & 0x7ff] = value;
+    } else if (address > 0x4017) {
+      this.nes.cpu.mem[address] = value;
+    } else if (address > 0x2007 && address < 0x4000) {
+      this.regWrite(0x2000 + (address & 0x7), value);
+    } else {
+      this.regWrite(address, value);
+    }
   }
 
-  nameTableWrite(index, address, value) {
-    this.nameTable[index].tile[address] = value;
-    this.checkSprite0(this.scanline - 20);
+  load(address) {
+    address &= 0xffff;
+    if (address > 0x4017) {
+      return this.nes.cpu.mem[address];
+    } else if (address >= 0x2000) {
+      return this.regLoad(address);
+    } else {
+      return this.nes.cpu.mem[address & 0x7ff];
+    }
   }
 
-  attribTableWrite(index, address, value) {
-    this.nameTable[index].writeAttrib(address, value);
+  regLoad(address) {
+    switch (address >> 12) {
+      case 0:
+      case 1:
+        break;
+      case 2:
+      case 3:
+        switch (address & 0x7) {
+          case 0x0: return this.nes.cpu.mem[0x2000];
+          case 0x1: return this.nes.cpu.mem[0x2001];
+          case 0x2: return this.nes.ppu.readStatusRegister();
+          case 0x3: return 0;
+          case 0x4: return this.nes.ppu.sramLoad();
+          case 0x5: return 0;
+          case 0x6: return 0;
+          case 0x7: return this.nes.ppu.vramLoad();
+        }
+        break;
+      case 4:
+        switch (address - 0x4015) {
+          case 0: return this.nes.papu.readReg(address);
+          case 1: return this.joy1Read();
+          case 2:
+            let w;
+            if (this.zapperX !== null && this.zapperY !== null && this.nes.ppu.isPixelWhite(this.zapperX, this.zapperY)) {
+              w = 0;
+            } else {
+              w = 0x1 << 3;
+            }
+            if (this.zapperFired) w |= 0x1 << 4;
+            return (this.joy2Read() | w) & 0xffff;
+        }
+        break;
+    }
+    return 0;
   }
 
-  spriteRamWriteUpdate(address, value) {
-    const tIndex = Math.floor(address / 4);
-    if (tIndex === 0) this.checkSprite0(this.scanline - 20);
-    if (address % 4 === 0) this.sprY[tIndex] = value;
-    else if (address % 4 === 1) this.sprTile[tIndex] = value;
-    else if (address % 4 === 2) {
-      this.vertFlip[tIndex] = (value & 0x80) !== 0;
-      this.horiFlip[tIndex] = (value & 0x40) !== 0;
-      this.bgPriority[tIndex] = (value & 0x20) !== 0;
-      this.sprCol[tIndex] = (value & 3) << 2;
-    } else if (address % 4 === 3) this.sprX[tIndex] = value;
+  regWrite(address, value) {
+    switch (address) {
+      case 0x2000: this.nes.cpu.mem[address] = value; this.nes.ppu.updateControlReg1(value); break;
+      case 0x2001: this.nes.cpu.mem[address] = value; this.nes.ppu.updateControlReg2(value); break;
+      case 0x2003: this.nes.ppu.writeSRAMAddress(value); break;
+      case 0x2004: this.nes.ppu.sramWrite(value); break;
+      case 0x2005: this.nes.ppu.scrollWrite(value); break;
+      case 0x2006: this.nes.ppu.writeVRAMAddress(value); break;
+      case 0x2007: this.nes.ppu.vramWrite(value); break;
+      case 0x4014: this.nes.ppu.sramDMA(value); break;
+      case 0x4015: this.nes.papu.writeReg(address, value); break;
+      case 0x4016:
+        if ((value & 1) === 0 && (this.joypadLastWrite & 1) === 1) {
+          this.joy1StrobeState = 0;
+          this.joy2StrobeState = 0;
+        }
+        this.joypadLastWrite = value;
+        break;
+      case 0x4017: this.nes.papu.writeReg(address, value); break;
+      default:
+        if (address >= 0x4000 && address <= 0x4017) {
+          this.nes.papu.writeReg(address, value);
+        }
+    }
   }
 
-  doNMI() {
-    this.setStatusFlag(this.STATUS_VBLANK, true);
-    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_NMI);
+  joy1Read() {
+    let ret;
+    switch (this.joy1StrobeState) {
+      case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
+        ret = this.nes.controllers[1].state[this.joy1StrobeState]; break;
+      case 19: ret = 1; break;
+      default: ret = 0; break;
+    }
+    this.joy1StrobeState++;
+    if (this.joy1StrobeState === 24) this.joy1StrobeState = 0;
+    return ret;
   }
 
-  isPixelWhite(x, y) {
-    this.triggerRendering();
-    return this.nes.ppu.buffer[(y << 8) + x] === 0xffffff;
+  joy2Read() {
+    let ret;
+    switch (this.joy2StrobeState) {
+      case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
+        ret = this.nes.controllers[2].state[this.joy2StrobeState]; break;
+      case 19: ret = 1; break;
+      default: ret = 0; break;
+    }
+    this.joy2StrobeState++;
+    if (this.joy2StrobeState === 24) this.joy2StrobeState = 0;
+    return ret;
+  }
+
+  loadROM() {
+    if (!this.nes.rom.valid || this.nes.rom.romCount < 1) {
+      throw new Error("NoMapper: Invalid ROM! Unable to load.");
+    }
+    
+    // Disable MMC5-specific PPU features (non-MMC5 mapper)
+    if (this.nes.ppu && typeof this.nes.ppu.disableMMC5Mode === 'function') {
+      this.nes.ppu.disableMMC5Mode();
+    }
+    
+    this.loadPRGROM();
+    this.loadCHRROM();
+    this.loadBatteryRam();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+
+  loadPRGROM() {
+    if (this.nes.rom.romCount > 1) {
+      this.loadRomBank(0, 0x8000);
+      this.loadRomBank(1, 0xc000);
+    } else {
+      this.loadRomBank(0, 0x8000);
+      this.loadRomBank(0, 0xc000);
+    }
+  }
+
+  loadCHRROM() {
+    if (this.nes.rom.vromCount > 0) {
+      if (this.nes.rom.vromCount === 1) {
+        this.loadVromBank(0, 0x0000);
+        this.loadVromBank(0, 0x1000);
+      } else {
+        this.loadVromBank(0, 0x0000);
+        this.loadVromBank(1, 0x1000);
+      }
+    }
+  }
+
+  loadBatteryRam() {
+    if (this.nes.rom.batteryRam) {
+      const ram = this.nes.rom.batteryRam;
+      if (ram !== null && ram.length === 0x2000) {
+        copyArrayElements(ram, 0, this.nes.cpu.mem, 0x6000, 0x2000);
+      }
+    }
+  }
+
+  loadRomBank(bank, address) {
+    bank %= this.nes.rom.romCount;
+    copyArrayElements(this.nes.rom.rom[bank], 0, this.nes.cpu.mem, address, 16384);
+  }
+
+  loadVromBank(bank, address) {
+    if (this.nes.rom.vromCount === 0) return;
+    this.nes.ppu.triggerRendering();
+    copyArrayElements(this.nes.rom.vrom[bank % this.nes.rom.vromCount], 0, this.nes.ppu.vramMem, address, 4096);
+    const vromTile = this.nes.rom.vromTile[bank % this.nes.rom.vromCount];
+    copyArrayElements(vromTile, 0, this.nes.ppu.ptTile, address >> 4, 256);
+  }
+
+  load32kRomBank(bank, address) {
+    this.loadRomBank((bank * 2) % this.nes.rom.romCount, address);
+    this.loadRomBank((bank * 2 + 1) % this.nes.rom.romCount, address + 16384);
+  }
+
+  load8kVromBank(bank4kStart, address) {
+    if (this.nes.rom.vromCount === 0) return;
+    this.nes.ppu.triggerRendering();
+    this.loadVromBank(bank4kStart % this.nes.rom.vromCount, address);
+    this.loadVromBank((bank4kStart + 1) % this.nes.rom.vromCount, address + 4096);
+  }
+
+  load1kVromBank(bank1k, address) {
+    if (this.nes.rom.vromCount === 0) return;
+    this.nes.ppu.triggerRendering();
+    const bank4k = Math.floor(bank1k / 4) % this.nes.rom.vromCount;
+    const bankoffset = (bank1k % 4) * 1024;
+    copyArrayElements(this.nes.rom.vrom[bank4k], bankoffset, this.nes.ppu.vramMem, address, 1024);
+    const vromTile = this.nes.rom.vromTile[bank4k];
+    const baseIndex = address >> 4;
+    for (let i = 0; i < 64; i++) {
+      this.nes.ppu.ptTile[baseIndex + i] = vromTile[(bank1k % 4 << 6) + i];
+    }
+  }
+
+  load2kVromBank(bank2k, address) {
+    if (this.nes.rom.vromCount === 0) return;
+    this.nes.ppu.triggerRendering();
+    const bank4k = Math.floor(bank2k / 2) % this.nes.rom.vromCount;
+    const bankoffset = (bank2k % 2) * 2048;
+    copyArrayElements(this.nes.rom.vrom[bank4k], bankoffset, this.nes.ppu.vramMem, address, 2048);
+    const vromTile = this.nes.rom.vromTile[bank4k];
+    const baseIndex = address >> 4;
+    for (let i = 0; i < 128; i++) {
+      this.nes.ppu.ptTile[baseIndex + i] = vromTile[(bank2k % 2 << 7) + i];
+    }
+  }
+
+  load8kRomBank(bank8k, address) {
+    const bank16k = Math.floor(bank8k / 2) % this.nes.rom.romCount;
+    const offset = (bank8k % 2) * 8192;
+    copyArrayElements(this.nes.rom.rom[bank16k], offset, this.nes.cpu.mem, address, 8192);
+  }
+
+  clockIrqCounter() {}
+  latchAccess(address) {}
+
+  toJSON() {
+    return {
+      joy1StrobeState: this.joy1StrobeState,
+      joy2StrobeState: this.joy2StrobeState,
+      joypadLastWrite: this.joypadLastWrite,
+    };
+  }
+
+  fromJSON(s) {
+    this.joy1StrobeState = s.joy1StrobeState;
+    this.joy2StrobeState = s.joy2StrobeState;
+    this.joypadLastWrite = s.joypadLastWrite;
+  }
+}
+
+/**
+ * Mapper 1 (MMC1)
+ */
+// ============================================================
+// MAPPER 1 (MMC1) - Hardware Accurate Implementation
+// ============================================================
+class Mapper1 extends Mapper {
+  constructor(nes) {
+    super(nes);
+    this.shiftReg = 0x10;
+    this.controlReg = 0x0C; // Default to Mode 3 (Fix Last, Swap 8000)
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.prgBank = 0;
+    this.lastWriteCycle = 0;
+  }
+
+  reset() {
+    super.reset();
+    this.shiftReg = 0x10;
+    this.controlReg = 0x0C; // Mode 3
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.prgBank = 0;
+    this.lastWriteCycle = 0;
+    
+    // Initial Load based on default state
+    this.updatePrgBanks();
+    this.updateChrBanks();
+  }
+
+  write(address, value) {
+    if (address < 0x8000) {
+      super.write(address, value);
+      return;
+    }
+
+    // Ignore writes on consecutive cycles (Hardware behavior)
+    // We assume this.nes.cpu.cycles exists. If not, this check is skipped.
+    const currentCycle = this.nes.cpu.cycles || 0;
+    if (currentCycle > 0 && (currentCycle - this.lastWriteCycle) <= 1) {
+       // Note: Consecutive cycle writes ignore data, but reset (0x80) might still work 
+       // on some revisions. For standard MMC1, usually the whole write is ignored.
+       // We'll trust FCEUX behavior and ignore it.
+       return;
+    }
+    this.lastWriteCycle = currentCycle;
+
+    // Reset (Bit 7 set)
+    if ((value & 0x80) !== 0) {
+      this.shiftReg = 0x10;
+      this.controlReg |= 0x0C; // Set PRG Mode 3 (Fix Last)
+      this.updatePrgBanks();
+      return;
+    }
+
+    // Serial Write (LSB first)
+    const bit = value & 1;
+    const full = (this.shiftReg & 1) !== 0; // Check if the "marker" bit has reached position 0
+    
+    // Shift right
+    this.shiftReg = (this.shiftReg >> 1) | (bit << 4);
+
+    if (full) {
+      const regValue = this.shiftReg;
+      const regType = (address >> 13) & 3; // 0=Control, 1=CHR0, 2=CHR1, 3=PRG
+
+      this.shiftReg = 0x10; // Reset shift register
+
+      switch (regType) {
+        case 0: // Control ($8000-$9FFF)
+          this.controlReg = regValue;
+          this.updateMirroring();
+          this.updateChrBanks();
+          this.updatePrgBanks();
+          break;
+        
+        case 1: // CHR Bank 0 ($A000-$BFFF)
+          this.chrBank0 = regValue;
+          this.updateChrBanks();
+          break;
+        
+        case 2: // CHR Bank 1 ($C000-$DFFF)
+          this.chrBank1 = regValue;
+          this.updateChrBanks();
+          break;
+        
+        case 3: // PRG Bank ($E000-$FFFF)
+          this.prgBank = regValue;
+          this.updatePrgBanks();
+          break;
+      }
+    }
+  }
+
+  updateMirroring() {
+    const mirrorMode = this.controlReg & 3;
+    switch (mirrorMode) {
+      case 0: this.nes.ppu.setMirroring(this.nes.rom.SINGLESCREEN_MIRRORING); break;
+      case 1: this.nes.ppu.setMirroring(this.nes.rom.SINGLESCREEN_MIRRORING2); break;
+      case 2: this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING); break;
+      case 3: this.nes.ppu.setMirroring(this.nes.rom.HORIZONTAL_MIRRORING); break;
+    }
+  }
+
+  updatePrgBanks() {
+    const prgMode = (this.controlReg >> 2) & 3;
+    const bank = this.prgBank & 0x0F;
+    const romCount = this.nes.rom.romCount;
+    
+    // Support for 256KB/512KB ROMs (e.g. Dragon Warrior 4 uses bit 4 of PRG bank)
+    // 256KB = 16 x 16KB banks. 512KB = 32 x 16KB banks.
+    // The "bank" variable is 4 bits (0-15).
+    // Some MMC1 boards use CHR bits to switch high PRG bits (SUROM/SOROM).
+    // For standard MMC1 (128KB/256KB), we typically mask appropriately in load functions.
+
+    switch (prgMode) {
+      case 0: 
+      case 1: // 32KB Mode (switch $8000, ignore LSB)
+        // Bit 0 of bank is ignored in 32K mode
+        this.load32kRomBank(bank >> 1, 0x8000);
+        break;
+        
+      case 2: // Fix First Bank ($8000 fixed to 0), Switch Last ($C000)
+        this.loadRomBank(0, 0x8000);
+        this.loadRomBank(bank, 0xC000);
+        break;
+        
+      case 3: // Fix Last Bank ($C000 fixed to last), Switch First ($8000)
+        this.loadRomBank(bank, 0x8000);
+        this.loadRomBank(romCount - 1, 0xC000);
+        break;
+    }
+  }
+
+  updateChrBanks() {
+    const chrMode = (this.controlReg >> 4) & 1;
+    const vromCount = this.nes.rom.vromCount;
+    
+    if (vromCount === 0) return; // CHR RAM not fully handled here, but loadVromBank exits safe
+
+    if (chrMode === 0) {
+      // 8KB Mode (Switch 8KB at $0000, ignore LSB of chrBank0)
+      this.load8kVromBank(this.chrBank0 & 0x1E, 0x0000);
+    } else {
+      // 4KB Mode (Switch 4KB at $0000 via chrBank0, 4KB at $1000 via chrBank1)
+      this.loadVromBank(this.chrBank0, 0x0000);
+      this.loadVromBank(this.chrBank1, 0x1000);
+    }
+  }
+
+  loadROM() {
+    if (!this.nes.rom.valid) throw new Error("MMC1: Invalid ROM!");
+    this.reset(); // Sets default state (Mode 3)
+    this.loadCHRROM();
+    this.loadBatteryRam();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
   }
 
   toJSON() {
-    const state = toJSON(this);
-    state.nameTable = [];
-    for (let i = 0; i < this.nameTable.length; i++) state.nameTable[i] = this.nameTable[i].toJSON();
-    state.ptTile = [];
-    for (let i = 0; i < this.ptTile.length; i++) state.ptTile[i] = this.ptTile[i].toJSON();
-    return state;
+    const s = super.toJSON();
+    s.shiftReg = this.shiftReg;
+    s.controlReg = this.controlReg;
+    s.chrBank0 = this.chrBank0;
+    s.chrBank1 = this.chrBank1;
+    s.prgBank = this.prgBank;
+    return s;
   }
 
-  fromJSON(state) {
-    fromJSON(this, state);
-    for (let i = 0; i < this.nameTable.length; i++) this.nameTable[i].fromJSON(state.nameTable[i]);
-    for (let i = 0; i < this.ptTile.length; i++) this.ptTile[i].fromJSON(state.ptTile[i]);
-    for (let i = 0; i < this.spriteMem.length; i++) this.spriteRamWriteUpdate(i, this.spriteMem[i]);
+  fromJSON(s) {
+    super.fromJSON(s);
+    this.shiftReg = s.shiftReg;
+    this.controlReg = s.controlReg;
+    this.chrBank0 = s.chrBank0;
+    this.chrBank1 = s.chrBank1;
+    this.prgBank = s.prgBank;
   }
 }
 
-class NameTable {
-  constructor(width, height, name) {
-    this.width = width;
-    this.height = height;
-    this.name = name;
-    this.tile = new Array(width * height).fill(0);
-    this.attrib = new Array(width * height).fill(0);
+/**
+ * Mapper 2 (UNROM)
+ */
+class Mapper2 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else this.loadRomBank(value, 0x8000);
+  }
+  loadROM() {
+    if (!this.nes.rom.valid) throw new Error("UNROM: Invalid ROM! Unable to load.");
+    this.loadRomBank(0, 0x8000);
+    this.loadRomBank(this.nes.rom.romCount - 1, 0xc000);
+    this.loadCHRROM();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+}
+
+/**
+ * Mapper 3 (CNROM)
+ */
+class Mapper3 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else {
+      const bank = (value % (this.nes.rom.vromCount / 2)) * 2;
+      this.loadVromBank(bank, 0x0000);
+      this.loadVromBank(bank + 1, 0x1000);
+    }
+  }
+}
+
+/**
+ * Mapper 4 (MMC3)
+ */
+class Mapper4 extends Mapper {
+  constructor(nes) {
+    super(nes);
+    this.hasMMC3Features = true;
+    this.CMD_SEL_2_1K_VROM_0000 = 0;
+    this.CMD_SEL_2_1K_VROM_0800 = 1;
+    this.CMD_SEL_1K_VROM_1000 = 2;
+    this.CMD_SEL_1K_VROM_1400 = 3;
+    this.CMD_SEL_1K_VROM_1800 = 4;
+    this.CMD_SEL_1K_VROM_1C00 = 5;
+    this.CMD_SEL_ROM_PAGE1 = 6;
+    this.CMD_SEL_ROM_PAGE2 = 7;
+    this.command = 0;
+    this.prgAddressSelect = 0;
+    this.chrAddressSelect = 0;
+    this.pageNumber = 0;
+    this.irqCounter = 0;
+    this.irqLatchValue = 0;
+    this.irqEnable = 0;
+    this.irqReloadPending = false;
+    this.prgAddressChanged = false;
+    this.ppuA12Prev = 0;
+    this.lastA12Cycle = 0;
+    this.lastClockScanline = -1;
+    this.hasScanlineIrq = true;
   }
 
-  getTileIndex(x, y) { return this.tile[y * this.width + x]; }
-  getAttrib(x, y) { return this.attrib[y * this.width + x]; }
+  reset() {
+    super.reset();
+    this.command = 0;
+    this.prgAddressSelect = 0;
+    this.chrAddressSelect = 0;
+    this.pageNumber = 0;
+    this.irqCounter = 0;
+    this.irqLatchValue = 0;
+    this.irqEnable = 0;
+    this.irqReloadPending = false;
+    this.prgAddressChanged = false;
+    this.ppuA12Prev = 0;
+    this.lastA12Cycle = 0;
+    this.lastClockScanline = -1;
+  }
 
-  writeAttrib(index, value) {
-    const basex = (index % 8) * 4;
-    const basey = Math.floor(index / 8) * 4;
-    for (let sqy = 0; sqy < 2; sqy++) {
-      for (let sqx = 0; sqx < 2; sqx++) {
-        const add = (value >> (2 * (sqy * 2 + sqx))) & 3;
-        for (let y = 0; y < 2; y++) {
-          for (let x = 0; x < 2; x++) {
-            const tx = basex + sqx * 2 + x;
-            const ty = basey + sqy * 2 + y;
-            this.attrib[ty * this.width + tx] = (add << 2) & 12;
+  write(address, value) {
+    if (address < 0x8000) {
+      super.write(address, value);
+      return;
+    }
+    switch (address & 0xE001) {
+      case 0x8000:
+        this.command = value & 7;
+        const tmp = (value >> 6) & 1;
+        if (tmp !== this.prgAddressSelect) this.prgAddressChanged = true;
+        this.prgAddressSelect = tmp;
+        this.chrAddressSelect = (value >> 7) & 1;
+        break;
+      case 0x8001:
+        this.executeCommand(this.command, value);
+        break;
+      case 0xA000:
+        if ((value & 1) !== 0) {
+          this.nes.ppu.setMirroring(this.nes.rom.HORIZONTAL_MIRRORING);
+        } else {
+          this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING);
+        }
+        break;
+      case 0xA001: break;
+      case 0xC000:
+        this.irqLatchValue = value;
+        break;
+      case 0xC001:
+        this.irqCounter = 0; // FCEUX/Hardware behavior: clear counter immediately
+        this.irqReloadPending = true;
+        break;
+      case 0xE000:
+        this.irqEnable = 0;
+        this.nes.cpu.irqRequested = false;
+        break;
+      case 0xE001:
+        this.irqEnable = 1;
+        break;
+    }
+  }
+
+  executeCommand(cmd, arg) {
+    const chrSel = this.chrAddressSelect;
+    switch (cmd) {
+      case this.CMD_SEL_2_1K_VROM_0000:
+        if (chrSel === 0) {
+          this.load1kVromBank(arg, 0x0000);
+          this.load1kVromBank(arg + 1, 0x0400);
+        } else {
+          this.load1kVromBank(arg, 0x1000);
+          this.load1kVromBank(arg + 1, 0x1400);
+        }
+        break;
+      case this.CMD_SEL_2_1K_VROM_0800:
+        if (chrSel === 0) {
+          this.load1kVromBank(arg, 0x0800);
+          this.load1kVromBank(arg + 1, 0x0c00);
+        } else {
+          this.load1kVromBank(arg, 0x1800);
+          this.load1kVromBank(arg + 1, 0x1c00);
+        }
+        break;
+      case this.CMD_SEL_1K_VROM_1000:
+        this.load1kVromBank(arg, chrSel === 0 ? 0x1000 : 0x0000);
+        break;
+      case this.CMD_SEL_1K_VROM_1400:
+        this.load1kVromBank(arg, chrSel === 0 ? 0x1400 : 0x0400);
+        break;
+      case this.CMD_SEL_1K_VROM_1800:
+        this.load1kVromBank(arg, chrSel === 0 ? 0x1800 : 0x0800);
+        break;
+      case this.CMD_SEL_1K_VROM_1C00:
+        this.load1kVromBank(arg, chrSel === 0 ? 0x1c00 : 0x0c00);
+        break;
+      case this.CMD_SEL_ROM_PAGE1:
+        if (this.prgAddressChanged) {
+          this.prgAddressChanged = false;
+          const lastBank = (this.nes.rom.romCount - 1) << 1;
+          if (this.prgAddressSelect === 0) {
+            this.load8kRomBank(lastBank, 0xC000);
+          } else {
+            this.load8kRomBank(lastBank, 0x8000);
           }
+        }
+        if (this.prgAddressSelect === 0) {
+          this.load8kRomBank(arg, 0x8000);
+        } else {
+          this.load8kRomBank(arg, 0xC000);
+        }
+        break;
+      case this.CMD_SEL_ROM_PAGE2:
+        this.load8kRomBank(arg, 0xA000);
+        break;
+    }
+  }
+
+  loadROM() {
+    if (!this.nes.rom.valid) throw new Error("MMC3: Invalid ROM!");
+    const lastBank = (this.nes.rom.romCount - 1) << 1;
+    this.prgAddressSelect = 0;
+    this.load8kRomBank(lastBank + 1, 0xE000);
+    this.load8kRomBank(lastBank, 0xC000);
+    this.load8kRomBank(0, 0x8000);
+    this.load8kRomBank(1, 0xA000);
+    this.loadCHRROM();
+    this.loadBatteryRam();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+    if (this.nes.ppu && this.onPpuInit) {
+      this.onPpuInit(this.nes.ppu);
+    }
+  }
+
+  clockIrqCounter() {
+    // 1. If counter is 0 or reload is pending, reload
+    if (this.irqCounter === 0 || this.irqReloadPending) {
+      this.irqCounter = this.irqLatchValue;
+      this.irqReloadPending = false;
+    } else {
+      // 2. Otherwise decrement
+      this.irqCounter--;
+      // 3. Trigger IRQ if we transitioned to 0
+      if (this.irqCounter === 0 && this.irqEnable) {
+        this.nes.cpu.requestIrq(this.nes.cpu.IRQ_NORMAL);
+      }
+    }
+  }
+
+  notifyA12(value) {
+    // A12 rising edge detection (0 -> 1)
+    if (value === 1 && this.ppuA12Prev === 0) {
+      const ppu = this.nes.ppu;
+      const isRendering = ppu.f_bgVisibility === 1 || ppu.f_spVisibility === 1;
+
+      if (isRendering) {
+        const currentScanline = ppu.scanline;
+        if (this.lastClockScanline !== currentScanline) {
+          this.clockIrqCounter();
+          this.lastClockScanline = currentScanline;
+        }
+      }
+    }
+    this.ppuA12Prev = value;
+  }
+
+  toJSON() {
+    const s = super.toJSON();
+    s.command = this.command;
+    s.prgAddressSelect = this.prgAddressSelect;
+    s.chrAddressSelect = this.chrAddressSelect;
+    s.pageNumber = this.pageNumber;
+    s.irqCounter = this.irqCounter;
+    s.irqLatchValue = this.irqLatchValue;
+    s.irqEnable = this.irqEnable;
+    s.prgAddressChanged = this.prgAddressChanged;
+    return s;
+  }
+
+  fromJSON(s) {
+    super.fromJSON(s);
+    this.command = s.command;
+    this.prgAddressSelect = s.prgAddressSelect;
+    this.chrAddressSelect = s.chrAddressSelect;
+    this.pageNumber = s.pageNumber;
+    this.irqCounter = s.irqCounter;
+    this.irqLatchValue = s.irqLatchValue;
+    this.irqEnable = s.irqEnable;
+    this.prgAddressChanged = s.prgAddressChanged;
+  }
+}
+
+/**
+ * Mapper 5 (MMC5 / ExROM) - Hardware Accurate Implementation
+ * Used by: Castlevania III
+**/
+class Mapper5 extends Mapper {
+  constructor(nes) {
+    super(nes);
+    this.hasScanlineIrq = true;
+    this.hasExtendedNametables = true;
+
+    // PRG banking
+    this.prgMode = 3;           // $5100 - PRG mode (0-3)
+    this.prgBankRegs = new Uint8Array(5); // $5113-$5117
+    this.prgRamProtect1 = 0;    // $5102
+    this.prgRamProtect2 = 0;    // $5103
+    
+    // CHR banking
+    this.chrMode = 0;           // $5101 - CHR mode (0-3)
+    this.chrBankRegs = new Uint8Array(12); // $5120-$512B (sprite + BG sets)
+    this.chrBankHi = 0;         // $5130 - upper CHR bits
+    this.lastChrWrite = 0;      // Track which set was last written (0=sprite, 1=BG)
+    
+    // Nametable mapping
+    this.ntMapping = new Uint8Array(4); // $5105 - nametable mapping
+    
+    // Extended RAM (1KB internal)
+    this.exRam = new Uint8Array(1024);
+    this.exRamMode = 0;         // $5104 - ExRAM mode (0-3)
+    
+    // Fill mode
+    this.fillTile = 0;          // $5106 - fill mode tile
+    this.fillAttr = 0;          // $5107 - fill mode attribute
+    
+    // IRQ
+    this.irqScanline = 0;       // $5203 - target scanline
+    this.irqEnabled = false;    // $5204 bit 7
+    this.irqPending = false;    // $5204 bit 7 read
+    this.inFrame = false;       // $5204 bit 6 read
+    this.lastPpuAddr = 0;
+    this.ppuIdleCount = 0;
+    this.ppuReadCount = 0;
+    this.currentScanline = 0;
+    
+    // Multiplier
+    this.multiplicand = 0;      // $5205
+    this.multiplier = 0;        // $5206
+    
+    // Split mode
+    this.splitMode = 0;         // $5200
+    this.splitScroll = 0;       // $5201
+    this.splitBank = 0;         // $5202
+    
+    // Internal state
+    this.prgRam = new Uint8Array(0x10000); // Up to 64KB PRG-RAM
+    this.lastPpuA13 = -1;  // Initialize to invalid value so first notifyPpuA13 always updates
+    this.spriteMode = false;    // True when fetching sprites
+  }
+
+  reset() {
+    super.reset();
+    
+    this.prgMode = 3;
+    this.prgBankRegs.fill(0);
+    this.prgBankRegs[4] = 0xFF; // $5117 defaults to last bank
+    this.prgRamProtect1 = 0;
+    this.prgRamProtect2 = 0;
+    
+    this.chrMode = 0;
+    this.chrBankRegs.fill(0);
+    this.chrBankHi = 0;
+    this.lastChrWrite = 0;
+    
+    this.ntMapping.fill(0);
+    this.exRam.fill(0);
+    this.exRamMode = 0;
+    
+    this.fillTile = 0;
+    this.fillAttr = 0;
+    
+    this.irqScanline = 0;
+    this.irqEnabled = false;
+    this.irqPending = false;
+    this.inFrame = false;
+    this.ppuIdleCount = 0;
+    this.ppuReadCount = 0;
+    this.currentScanline = 0;
+    
+    this.multiplicand = 0;
+    this.multiplier = 0;
+    
+    this.splitMode = 0;
+    this.splitScroll = 0;
+    this.splitBank = 0;
+    
+    this.lastPpuA13 = -1;  // Initialize to invalid value so first notifyPpuA13 always updates
+    this.spriteMode = false;
+    
+    this.updatePrgBanks();
+    this.updateChrBanks();
+  }
+
+  // === Memory Access ===
+  
+  load(address) {
+    address &= 0xFFFF;
+    
+    if (address < 0x2000) {
+      return this.nes.cpu.mem[address & 0x7FF];
+    }
+    
+    // MMC5 registers $5000-$5FFF
+    if (address >= 0x5000 && address < 0x6000) {
+      return this.readMMC5Register(address);
+    }
+    
+    // PRG-RAM $6000-$7FFF
+    if (address >= 0x6000 && address < 0x8000) {
+      return this.readPrgRam(address);
+    }
+    
+    // PRG-ROM $8000-$FFFF
+    if (address >= 0x8000) {
+      return this.readPrgRom(address);
+    }
+    
+    return this.regLoad(address);
+  }
+
+  write(address, value) {
+    if (address < 0x2000) {
+      this.nes.cpu.mem[address & 0x7FF] = value;
+      return;
+    }
+    
+    // MMC5 registers $5000-$5FFF
+    if (address >= 0x5000 && address < 0x6000) {
+      this.writeMMC5Register(address, value);
+      return;
+    }
+    
+    // PRG-RAM $6000-$7FFF
+    if (address >= 0x6000 && address < 0x8000) {
+      this.writePrgRam(address, value);
+      return;
+    }
+    
+    // PRG-ROM area - check if RAM is mapped
+    if (address >= 0x8000) {
+      this.writePrgArea(address, value);
+      return;
+    }
+    
+    // Standard register handling
+    if (address >= 0x2000 && address < 0x4020) {
+      if (address < 0x4000) {
+        this.regWrite(0x2000 + (address & 0x7), value);
+      } else {
+        this.regWrite(address, value);
+      }
+    }
+  }
+
+  // === MMC5 Register Access ===
+  
+  readMMC5Register(address) {
+    switch (address) {
+      // Pulse 1/2, PCM (not readable)
+      case 0x5000: case 0x5001: case 0x5002: case 0x5003:
+      case 0x5004: case 0x5005: case 0x5006: case 0x5007:
+      case 0x5010: case 0x5011:
+        return 0;
+        
+      // Multiplier result
+      case 0x5205:
+        return (this.multiplicand * this.multiplier) & 0xFF;
+      case 0x5206:
+        return ((this.multiplicand * this.multiplier) >> 8) & 0xFF;
+        
+      // IRQ status
+      case 0x5204: {
+        let result = 0;
+        if (this.irqPending) result |= 0x80;
+        if (this.inFrame) result |= 0x40;
+        this.irqPending = false;
+        this.nes.cpu.irqRequested = false;
+        return result;
+      }
+      
+      // ExRAM read
+      default:
+        if (address >= 0x5C00 && address < 0x6000) {
+          if (this.exRamMode >= 2) {
+            return this.exRam[address & 0x3FF];
+          }
+          return 0;
+        }
+        return 0;
+    }
+  }
+
+  writeMMC5Register(address, value) {
+    switch (address) {
+      // Audio registers (stub - not implemented)
+      case 0x5000: case 0x5001: case 0x5002: case 0x5003:
+      case 0x5004: case 0x5005: case 0x5006: case 0x5007:
+      case 0x5010: case 0x5011: case 0x5015:
+        break;
+        
+      // PRG Mode
+      case 0x5100:
+        this.prgMode = value & 0x03;
+        this.updatePrgBanks();
+        break;
+        
+      // CHR Mode
+      case 0x5101:
+        this.chrMode = value & 0x03;
+        this.updateChrBanks();
+        break;
+        
+      // PRG-RAM Protect
+      case 0x5102:
+        this.prgRamProtect1 = value & 0x03;
+        break;
+      case 0x5103:
+        this.prgRamProtect2 = value & 0x03;
+        break;
+        
+      // Extended RAM Mode
+      case 0x5104:
+        this.exRamMode = value & 0x03;
+        break;
+        
+      // Nametable Mapping
+      case 0x5105:
+        this.ntMapping[0] = value & 0x03;
+        this.ntMapping[1] = (value >> 2) & 0x03;
+        this.ntMapping[2] = (value >> 4) & 0x03;
+        this.ntMapping[3] = (value >> 6) & 0x03;
+        this.updateNametableMirroring();
+        break;
+        
+      // Fill Mode
+      case 0x5106:
+        this.fillTile = value;
+        break;
+      case 0x5107:
+        this.fillAttr = value & 0x03;
+        break;
+        
+      // PRG Banking
+      case 0x5113:
+        this.prgBankRegs[0] = value & 0x07;
+        this.updatePrgBanks();
+        break;
+      case 0x5114:
+        this.prgBankRegs[1] = value;
+        this.updatePrgBanks();
+        break;
+      case 0x5115:
+        this.prgBankRegs[2] = value;
+        this.updatePrgBanks();
+        break;
+      case 0x5116:
+        this.prgBankRegs[3] = value;
+        this.updatePrgBanks();
+        break;
+      case 0x5117:
+        this.prgBankRegs[4] = value | 0x80; // ROM only
+        this.updatePrgBanks();
+        break;
+        
+      // CHR Banking (Sprite set)
+      case 0x5120: case 0x5121: case 0x5122: case 0x5123:
+      case 0x5124: case 0x5125: case 0x5126: case 0x5127:
+        this.chrBankRegs[address - 0x5120] = value;
+        this.lastChrWrite = 0;
+        this.updateChrBanks();
+        break;
+        
+      // CHR Banking (BG set)
+      case 0x5128: case 0x5129: case 0x512A: case 0x512B:
+        this.chrBankRegs[8 + (address - 0x5128)] = value;
+        this.lastChrWrite = 1;
+        this.updateChrBanks();
+        break;
+        
+      // CHR Bank High Bits
+      case 0x5130:
+        this.chrBankHi = value & 0x03;
+        break;
+        
+      // Split Mode
+      case 0x5200:
+        this.splitMode = value;
+        break;
+      case 0x5201:
+        this.splitScroll = value;
+        break;
+      case 0x5202:
+        this.splitBank = value;
+        break;
+        
+      // IRQ
+      case 0x5203:
+        this.irqScanline = value;
+        break;
+      case 0x5204:
+        this.irqEnabled = (value & 0x80) !== 0;
+        break;
+        
+      // Multiplier
+      case 0x5205:
+        this.multiplicand = value;
+        break;
+      case 0x5206:
+        this.multiplier = value;
+        break;
+        
+      // ExRAM Write
+      default:
+        if (address >= 0x5C00 && address < 0x6000) {
+          if (this.exRamMode !== 3) {
+            if (this.exRamMode < 2) {
+              if (this.inFrame) {
+                this.exRam[address & 0x3FF] = value;
+              } else {
+                this.exRam[address & 0x3FF] = 0;
+              }
+            } else {
+              this.exRam[address & 0x3FF] = value;
+            }
+          }
+        }
+        break;
+    }
+  }
+
+  // === PRG Banking ===
+  
+  updatePrgBanks() {
+    const romCount8k = this.nes.rom.romCount * 2;
+    
+    switch (this.prgMode) {
+      case 0: { // 32KB mode
+        const bank32k = (this.prgBankRegs[4] & 0x7C) >> 2;
+        const base = (bank32k * 4) % romCount8k;
+        this.load8kRomBank(base, 0x8000);
+        this.load8kRomBank((base + 1) % romCount8k, 0xA000);
+        this.load8kRomBank((base + 2) % romCount8k, 0xC000);
+        this.load8kRomBank((base + 3) % romCount8k, 0xE000);
+        break;
+      }
+      case 1: { // 16KB + 16KB mode
+        const bank16k_0 = (this.prgBankRegs[2] & 0x7E) >> 1;
+        const base0 = (bank16k_0 * 2) % romCount8k;
+        if (this.prgBankRegs[2] & 0x80) {
+          this.load8kRomBank(base0, 0x8000);
+          this.load8kRomBank((base0 + 1) % romCount8k, 0xA000);
+        }
+        const bank16k_1 = (this.prgBankRegs[4] & 0x7E) >> 1;
+        const base1 = (bank16k_1 * 2) % romCount8k;
+        this.load8kRomBank(base1, 0xC000);
+        this.load8kRomBank((base1 + 1) % romCount8k, 0xE000);
+        break;
+      }
+      case 2: { // 16KB + 8KB + 8KB mode
+        const bank16k = (this.prgBankRegs[2] & 0x7E) >> 1;
+        const base = (bank16k * 2) % romCount8k;
+        if (this.prgBankRegs[2] & 0x80) {
+          this.load8kRomBank(base, 0x8000);
+          this.load8kRomBank((base + 1) % romCount8k, 0xA000);
+        }
+        if (this.prgBankRegs[3] & 0x80) {
+          this.load8kRomBank((this.prgBankRegs[3] & 0x7F) % romCount8k, 0xC000);
+        }
+        this.load8kRomBank((this.prgBankRegs[4] & 0x7F) % romCount8k, 0xE000);
+        break;
+      }
+      case 3: { // 8KB × 4 mode
+        if (this.prgBankRegs[1] & 0x80) {
+          this.load8kRomBank((this.prgBankRegs[1] & 0x7F) % romCount8k, 0x8000);
+        }
+        if (this.prgBankRegs[2] & 0x80) {
+          this.load8kRomBank((this.prgBankRegs[2] & 0x7F) % romCount8k, 0xA000);
+        }
+        if (this.prgBankRegs[3] & 0x80) {
+          this.load8kRomBank((this.prgBankRegs[3] & 0x7F) % romCount8k, 0xC000);
+        }
+        this.load8kRomBank((this.prgBankRegs[4] & 0x7F) % romCount8k, 0xE000);
+        break;
+      }
+    }
+  }
+
+  readPrgRam(address) {
+    const bank = this.prgBankRegs[0] & 0x07;
+    const offset = (bank * 0x2000) + (address & 0x1FFF);
+    return this.prgRam[offset];
+  }
+
+  writePrgRam(address, value) {
+    if (this.prgRamProtect1 === 0x02 && this.prgRamProtect2 === 0x01) {
+      const bank = this.prgBankRegs[0] & 0x07;
+      const offset = (bank * 0x2000) + (address & 0x1FFF);
+      this.prgRam[offset] = value;
+      if (this.nes.opts.onBatteryRamWrite) {
+        this.nes.opts.onBatteryRamWrite(address, value);
+      }
+    }
+  }
+
+  readPrgRom(address) {
+    if (this.prgMode === 3) {
+      const slot = (address - 0x8000) >> 13;
+      const reg = this.prgBankRegs[slot + 1];
+      if ((reg & 0x80) === 0) {
+        const bank = reg & 0x07;
+        const offset = (bank * 0x2000) + (address & 0x1FFF);
+        return this.prgRam[offset];
+      }
+    }
+    return this.nes.cpu.mem[address];
+  }
+
+  writePrgArea(address, value) {
+    if (this.prgMode === 3) {
+      const slot = (address - 0x8000) >> 13;
+      if (slot < 3) {
+        const reg = this.prgBankRegs[slot + 1];
+        if ((reg & 0x80) === 0) {
+          if (this.prgRamProtect1 === 0x02 && this.prgRamProtect2 === 0x01) {
+            const bank = reg & 0x07;
+            const offset = (bank * 0x2000) + (address & 0x1FFF);
+            this.prgRam[offset] = value;
+          }
+          return;
         }
       }
     }
   }
 
-  toJSON() { return { tile: this.tile, attrib: this.attrib }; }
-  fromJSON(s) { this.tile = s.tile; this.attrib = s.attrib; }
-}
-
-class PaletteTable {
-  constructor() {
-    this.curTable = new Array(64);
-    this.emphTable = new Array(8);
-    this.currentEmph = -1;
+  // === CHR Banking ===
+  
+  updateChrBanks() {
+    if (this.nes.rom.vromCount === 0) return;
+    this.updateChrBanksForMode(false);
   }
 
-  reset() { this.setEmphasis(0); }
+  updateChrBanksForMode(isSprite) {
+    if (this.nes.rom.vromCount === 0) return;
+    
+    // Default to Set A (Registers $5120-$5127) which starts at index 0
+    let bankOffset = 0;
+    
+    // Determine if we should use Set B (Registers $5128-$512B) which starts at index 8
+    // Backgrounds use Set B if:
+    // 1. We are in ExGrafix Mode (exRamMode === 1)
+    // 2. OR We are using 8x16 Sprites (ppu.f_spriteSize === 1)
+    if (!isSprite) {
+      const is8x16 = this.nes.ppu.f_spriteSize === 1;
+      if (this.exRamMode === 1 || is8x16) {
+        bankOffset = 8;
+      }
+    }
+    
+    const hiShift = this.chrBankHi << 8;
+    
+    switch (this.chrMode) {
+      case 0: { // 8KB mode
+        // For 8KB mode, we usually take the last register of the set (Offset + 7)
+        // Note: Set B only has 4 registers (8-11), effectively mapping 5128-512B.
+        // In 8KB mode for BG (Set B), it usually uses $512B (Index 11).
+        const regIndex = bankOffset === 8 ? 11 : 7;
+        const bank = this.chrBankRegs[regIndex] | hiShift;
+        const bank4k = (bank * 2) % this.nes.rom.vromCount;
+        this.loadVromBank(bank4k, 0x0000);
+        this.loadVromBank((bank4k + 1) % this.nes.rom.vromCount, 0x1000);
+        break;
+      }
+      case 1: { // 4KB × 2 mode
+        const regIndex0 = bankOffset === 8 ? 11 : 3; // $512B or $5123
+        const regIndex1 = bankOffset === 8 ? 11 : 7; // $512B or $5127
+        
+        // Wait, standard hardware behavior for Set B in Mode 1 is actually complex.
+        // But simply mapping the registers linearly usually works for CV3.
+        // For Set A (Sprites): uses regs 3 and 7.
+        // For Set B (BG): Uses regs 11 (and technically 11 again? Or 9 and 11?)
+        // Standard MMC5 4KB mode usually just points to the loaded banks.
+        // Let's stick to the linear map if offset is 0, but if offset is 8 (Set B), 
+        // MMC5 uses $5128-$512B.
+        
+        // CORRECTION: In Mode 1 (4KB):
+        // Set A uses $5123 and $5127.
+        // Set B uses $512B for both? Or $512B and $512B? 
+        // Actually, CV3 uses Mode 3 (1KB) mostly, but let's be safe:
+        const bank0 = this.chrBankRegs[bankOffset + 3] | hiShift;
+        const bank1 = this.chrBankRegs[bankOffset + 7] | hiShift;
+        this.loadVromBank(bank0 % this.nes.rom.vromCount, 0x0000);
+        this.loadVromBank(bank1 % this.nes.rom.vromCount, 0x1000);
+        break;
+      }
+      case 2: { // 2KB × 4 mode
+        const bank0 = this.chrBankRegs[bankOffset + 1] | hiShift;
+        const bank1 = this.chrBankRegs[bankOffset + 3] | hiShift;
+        const bank2 = this.chrBankRegs[bankOffset + 5] | hiShift;
+        const bank3 = this.chrBankRegs[bankOffset + 7] | hiShift;
+        this.load2kVromBank(bank0, 0x0000);
+        this.load2kVromBank(bank1, 0x0800);
+        this.load2kVromBank(bank2, 0x1000);
+        this.load2kVromBank(bank3, 0x1800);
+        break;
+      }
+      case 3: { // 1KB × 8 mode
+        // This is what Castlevania III uses most of the time
+        for (let i = 0; i < 8; i++) {
+          // If bankOffset is 8, we read indices 8,9,10,11.
+          // Since the loop goes 0-7, we need to wrap the reads for Set B (which only has 4 regs).
+          // However, your chrBankRegs array is size 12. 
+          // Indices 0-7 are Set A. Indices 8-11 are Set B.
+          // When fetching for BG (Set B), MMC5 maps:
+          // $0000-$03FF -> Reg 8
+          // $0400-$07FF -> Reg 9
+          // $0800-$0BFF -> Reg 10
+          // $0C00-$0FFF -> Reg 11
+          // $1000-$13FF -> Reg 8
+          // $1400-$17FF -> Reg 9
+          // $1800-$1BFF -> Reg 10
+          // $1C00-$1FFF -> Reg 11
+          
+          let regIndex;
+          if (bankOffset === 0) {
+             regIndex = i;
+          } else {
+             // Wrap 8-11
+             regIndex = 8 + (i % 4);
+          }
 
-  loadNTSCPalette() {
-    this.curTable = [0x525252, 0xB40000, 0xA00000, 0xB1003D, 0x740069, 0x00005B, 0x00005F, 0x001840, 0x002F10, 0x084A08, 0x006700, 0x124200, 0x6D2800, 0x000000, 0x000000, 0x000000, 0xC4D5E7, 0xFF4000, 0xDC0E22, 0xFF476B, 0xD7009F, 0x680AD7, 0x0019BC, 0x0054B1, 0x006A5B, 0x008C03, 0x00AB00, 0x2C8800, 0xA47200, 0x000000, 0x000000, 0x000000, 0xF8F8F8, 0xFFAB3C, 0xFF7981, 0xFF5BC5, 0xFF48F2, 0xDF49FF, 0x476DFF, 0x00B4F7, 0x00E0FF, 0x00E375, 0x03F42B, 0x78B82E, 0xE5E218, 0x787878, 0x000000, 0x000000, 0xFFFFFF, 0xFFF2BE, 0xF8B8B8, 0xF8B8D8, 0xFFB6FF, 0xFFC3FF, 0xC7D1FF, 0x9ADAFF, 0x88EDF8, 0x83FFDD, 0xB8F8B8, 0xF5F8AC, 0xFFFFB0, 0xF8D8F8, 0x000000, 0x000000];
-    this.makeTables();
-    this.setEmphasis(0);
-  }
-
-  makeTables() {
-    let r, g, b, col, rFactor, gFactor, bFactor;
-    for (let emph = 0; emph < 8; emph++) {
-      rFactor = 1.0; gFactor = 1.0; bFactor = 1.0;
-      if ((emph & 1) !== 0) { rFactor = 0.75; bFactor = 0.75; }
-      if ((emph & 2) !== 0) { rFactor = 0.75; gFactor = 0.75; }
-      if ((emph & 4) !== 0) { gFactor = 0.75; bFactor = 0.75; }
-      this.emphTable[emph] = new Array(64);
-      for (let i = 0; i < 64; i++) {
-        col = this.curTable[i];
-        r = Math.floor(this.getRed(col) * rFactor);
-        g = Math.floor(this.getGreen(col) * gFactor);
-        b = Math.floor(this.getBlue(col) * bFactor);
-        this.emphTable[emph][i] = this.getRgb(r, g, b);
+          const bank = this.chrBankRegs[regIndex] | hiShift;
+          this.load1kVromBank(bank, i * 0x400);
+        }
+        break;
       }
     }
   }
 
-  setEmphasis(emph) {
-    if (emph !== this.currentEmph) {
-      this.currentEmph = emph;
-      for (let i = 0; i < 64; i++) this.curTable[i] = this.emphTable[emph][i];
+  // === Nametable Mapping ===
+  
+  updateNametableMirroring() {
+    const m = this.ntMapping;
+    
+    // Only update PPU mirroring for standard mappings (modes 0 and 1)
+    // If any nametable uses ExRAM (2) or fill (3), we handle it ourselves
+    const hasCustomMapping = m.some(v => v >= 2);
+    if (hasCustomMapping) {
+      // Don't touch PPU mirroring - we handle reads via readNametable()
+      return;
+    }
+    
+    // Standard CIRAM mappings
+    if (m[0] === 0 && m[1] === 1 && m[2] === 0 && m[3] === 1) {
+      this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING);
+    } else if (m[0] === 0 && m[1] === 0 && m[2] === 1 && m[3] === 1) {
+      this.nes.ppu.setMirroring(this.nes.rom.HORIZONTAL_MIRRORING);
+    } else if (m[0] === m[1] && m[1] === m[2] && m[2] === m[3]) {
+      if (m[0] === 0) {
+        this.nes.ppu.setMirroring(this.nes.rom.SINGLESCREEN_MIRRORING);
+      } else if (m[0] === 1) {
+        this.nes.ppu.setMirroring(this.nes.rom.SINGLESCREEN_MIRRORING2);
+      }
     }
   }
 
-  getEntry(yiq) { return this.curTable[yiq]; }
-  getRed(rgb) { return (rgb >> 16) & 0xff; }
-  getGreen(rgb) { return (rgb >> 8) & 0xff; }
-  getBlue(rgb) { return rgb & 0xff; }
-  getRgb(r, g, b) { return (r << 16) | (g << 8) | b; }
+  // === Scanline IRQ ===
+  
+  ppuScanline(scanline, rendering) {
+    // Pre-render/VBlank scanline (-1) resets in-frame state
+    if (scanline < 0) {
+      this.inFrame = false;
+      this.ppuIdleCount = 0;
+      this.ppuReadCount = 0;
+      return;
+    }
+    
+    if (!rendering) {
+      this.ppuIdleCount++;
+      if (this.ppuIdleCount > 3) {
+        this.inFrame = false;
+        this.currentScanline = 0;
+      }
+      return;
+    }
+    
+    this.ppuIdleCount = 0;
+    
+    // First visible scanline starts the frame
+    if (!this.inFrame) {
+      this.inFrame = true;
+      this.currentScanline = 0;
+      this.irqPending = false;
+    }
+    
+    this.currentScanline = scanline;
+    
+    // Check for IRQ match
+    if (scanline === this.irqScanline) {
+      this.irqPending = true;
+      if (this.irqEnabled) {
+        this.nes.cpu.requestIrq(this.nes.cpu.IRQ_NORMAL);
+      }
+    }
+  }
+
+  ppuAddressUpdate(address) {
+    if (address >= 0x2000 && address < 0x3F00) {
+      this.ppuReadCount++;
+      if (this.ppuReadCount >= 3 && !this.inFrame) {
+        this.inFrame = true;
+        this.currentScanline = 0;
+      }
+    }
+    this.lastPpuAddr = address;
+  }
+
+  notifyPpuA13(value) {
+    if (value !== this.lastPpuA13) {
+      this.lastPpuA13 = value;
+      this.spriteMode = (value === 0);
+      // BUG FIX: Always update banks when A13 changes. 
+      // The logic inside updateChrBanksForMode will decide if a swap is actually necessary.
+      this.updateChrBanksForMode(this.spriteMode);
+    }
+  }
+
+  // === Nametable Read (fill mode and ExRAM) ===
+  
+  readNametable(address) {
+    // address is $2000-$2FFF
+    const ntIndex = (address >> 10) & 0x03;
+    const offset = address & 0x3FF;
+    const mapping = this.ntMapping[ntIndex];
+    
+    switch (mapping) {
+      case 0: // CIRAM $0000 (first 1KB)
+        return this.nes.ppu.vramMem[0x2000 + offset];
+      case 1: // CIRAM $0400 (second 1KB)
+        return this.nes.ppu.vramMem[0x2400 + offset];
+      case 2: // ExRAM (if mode 0 or 1)
+        if (this.exRamMode < 2) {
+          return this.exRam[offset];
+        }
+        return 0;
+      case 3: // Fill mode
+        if (offset < 0x3C0) {
+          return this.fillTile;
+        }
+        // Attribute area - replicate fill attribute to all quadrants
+        return (this.fillAttr * 0x55);
+      default:
+        return 0;
+    }
+  }
+
+  writeNametable(address, value) {
+    const ntIndex = (address >> 10) & 0x03;
+    const offset = address & 0x3FF;
+    const mapping = this.ntMapping[ntIndex];
+    
+    switch (mapping) {
+      case 0:
+        this.nes.ppu.vramMem[0x2000 + offset] = value;
+        break;
+      case 1:
+        this.nes.ppu.vramMem[0x2400 + offset] = value;
+        break;
+      case 2:
+        if (this.exRamMode < 2 && this.inFrame) {
+          this.exRam[offset] = value;
+        }
+        break;
+      // Fill mode is read-only
+    }
+  }
+
+  // === Extended Attributes (ExGrafix mode) ===
+  
+  getExtendedAttribute(tileX, tileY) {
+    if (this.exRamMode !== 1) return 0;
+    const exRamAddr = (tileY * 32) + tileX;
+    return this.exRam[exRamAddr & 0x3FF] & 0x03;
+  }
+
+  getExtendedChrBank(tileX, tileY) {
+    if (this.exRamMode !== 1) return 0;
+    const exRamAddr = (tileY * 32) + tileX;
+    return (this.exRam[exRamAddr & 0x3FF] >> 2) & 0x3F;
+  }
+
+  // === ROM Loading ===
+  
+  loadROM() {
+    if (!this.nes.rom.valid) {
+      throw new Error("MMC5: Invalid ROM! Unable to load.");
+    }
+    
+    // Enable MMC5-specific PPU features
+    if (this.nes.ppu && typeof this.nes.ppu.enableMMC5Mode === 'function') {
+      this.nes.ppu.enableMMC5Mode();
+    }
+    
+    this.prgBankRegs[4] = 0xFF;
+    
+    const lastBank = (this.nes.rom.romCount * 2) - 1;
+    this.load8kRomBank(lastBank, 0x8000);
+    this.load8kRomBank(lastBank, 0xA000);
+    this.load8kRomBank(lastBank, 0xC000);
+    this.load8kRomBank(lastBank, 0xE000);
+    
+    this.loadCHRROM();
+    this.updateNametableMirroring();
+    this.loadBatteryRam();
+    
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+
+  loadBatteryRam() {
+    if (this.nes.rom.batteryRam) {
+      const ram = this.nes.rom.batteryRam;
+      if (ram !== null && ram.length <= this.prgRam.length) {
+        copyArrayElements(ram, 0, this.prgRam, 0, ram.length);
+      }
+    }
+  }
+
+  // === State Serialization ===
+  
+  toJSON() {
+    const s = super.toJSON();
+    s.prgMode = this.prgMode;
+    s.prgBankRegs = Array.from(this.prgBankRegs);
+    s.prgRamProtect1 = this.prgRamProtect1;
+    s.prgRamProtect2 = this.prgRamProtect2;
+    s.chrMode = this.chrMode;
+    s.chrBankRegs = Array.from(this.chrBankRegs);
+    s.chrBankHi = this.chrBankHi;
+    s.lastChrWrite = this.lastChrWrite;
+    s.ntMapping = Array.from(this.ntMapping);
+    s.exRam = Array.from(this.exRam);
+    s.exRamMode = this.exRamMode;
+    s.fillTile = this.fillTile;
+    s.fillAttr = this.fillAttr;
+    s.irqScanline = this.irqScanline;
+    s.irqEnabled = this.irqEnabled;
+    s.irqPending = this.irqPending;
+    s.inFrame = this.inFrame;
+    s.currentScanline = this.currentScanline;
+    s.multiplicand = this.multiplicand;
+    s.multiplier = this.multiplier;
+    s.splitMode = this.splitMode;
+    s.splitScroll = this.splitScroll;
+    s.splitBank = this.splitBank;
+    s.prgRam = Array.from(this.prgRam);
+    return s;
+  }
+
+  fromJSON(s) {
+    super.fromJSON(s);
+    this.prgMode = s.prgMode;
+    this.prgBankRegs = new Uint8Array(s.prgBankRegs);
+    this.prgRamProtect1 = s.prgRamProtect1;
+    this.prgRamProtect2 = s.prgRamProtect2;
+    this.chrMode = s.chrMode;
+    this.chrBankRegs = new Uint8Array(s.chrBankRegs);
+    this.chrBankHi = s.chrBankHi;
+    this.lastChrWrite = s.lastChrWrite;
+    this.ntMapping = new Uint8Array(s.ntMapping);
+    this.exRam = new Uint8Array(s.exRam);
+    this.exRamMode = s.exRamMode;
+    this.fillTile = s.fillTile;
+    this.fillAttr = s.fillAttr;
+    this.irqScanline = s.irqScanline;
+    this.irqEnabled = s.irqEnabled;
+    this.irqPending = s.irqPending;
+    this.inFrame = s.inFrame;
+    this.currentScanline = s.currentScanline;
+    this.multiplicand = s.multiplicand;
+    this.multiplier = s.multiplier;
+    this.splitMode = s.splitMode;
+    this.splitScroll = s.splitScroll;
+    this.splitBank = s.splitBank;
+    this.prgRam = new Uint8Array(s.prgRam);
+    this.updatePrgBanks();
+    this.updateChrBanks();
+    this.updateNametableMirroring();
+  }
 }
+
+/**
+ * Mapper 7 (AxROM)
+ */
+class Mapper7 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else {
+      this.load32kRomBank(value & 0x7, 0x8000);
+      if (value & 0x10) this.nes.ppu.setMirroring(this.nes.rom.SINGLESCREEN_MIRRORING2);
+      else this.nes.ppu.setMirroring(this.nes.rom.SINGLESCREEN_MIRRORING);
+    }
+  }
+  loadROM() {
+    if (!this.nes.rom.valid) throw new Error("AOROM: Invalid ROM! Unable to load.");
+    this.loadPRGROM();
+    this.loadCHRROM();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+}
+
+/**
+ * Mapper 9 (MMC2) - Punch-Out!!
+ * 
+ * Uses latches triggered by PPU pattern table reads to switch CHR banks.
+ * The latch is triggered when the PPU fetches tile $FD or $FE from either
+ * pattern table, allowing mid-screen graphics changes.
+ */
+class Mapper9 extends Mapper {
+  constructor(nes) {
+    super(nes);
+    this.hasMMC2Features = true;
+    // Enable extra tile fetches in PPU for latch detection
+    this.hasLatch = true;
+    // Initialize all properties in constructor to prevent undefined access
+    this.latchLo = 0;
+    this.latchHi = 0;
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.chrBank2 = 0;
+    this.chrBank3 = 0;
+    this.prgBank = 0;
+  }
+
+  reset() {
+    super.reset();
+    // Latch states: 0 = $FD, 1 = $FE
+    this.latchLo = 0;  // Latch for $0000-$0FFF
+    this.latchHi = 0;  // Latch for $1000-$1FFF
+    // CHR bank registers
+    this.chrBank0 = 0; // $B000 - used when latchLo = 0 ($FD)
+    this.chrBank1 = 0; // $C000 - used when latchLo = 1 ($FE)
+    this.chrBank2 = 0; // $D000 - used when latchHi = 0 ($FD)
+    this.chrBank3 = 0; // $E000 - used when latchHi = 1 ($FE)
+    this.prgBank = 0;
+  }
+
+  /**
+   * Switch a 4KB CHR bank with bounds checking
+   */
+  safeSwitchBank(bank, address) {
+    const rom = this.nes.rom;
+    if (rom.vromCount === 0) return;
+
+    if (bank >= rom.vromCount) {
+      bank %= rom.vromCount;
+    }
+
+    // Copy VROM data
+    copyArrayElements(rom.vrom[bank], 0, this.nes.ppu.vramMem, address, 4096);
+
+    var vromTile = rom.vromTile[bank];
+    if (vromTile) {
+      var baseIndex = address >> 4;
+      for (let i = 0; i < 256; i++) {
+        this.nes.ppu.ptTile[baseIndex + i] = vromTile[i];
+      }
+    }
+
+    this.nes.ppu.validTileData = false;
+  }
+
+  write(address, value) {
+    if (address < 0xA000) {
+      if (address < 0x8000) {
+        super.write(address, value);
+      }
+      return;
+    }
+
+    switch (address & 0xF000) {
+      case 0xA000:
+        // PRG ROM bank select ($A000-$AFFF)
+        this.prgBank = value & 0x0F;
+        this.load8kRomBank(this.prgBank, 0x8000);
+        break;
+
+      case 0xB000:
+        // CHR ROM $FD/0000 bank select ($B000-$BFFF)
+        this.chrBank0 = value & 0x1F;
+        if (this.latchLo === 0) {
+          this.safeSwitchBank(this.chrBank0, 0x0000);
+        }
+        break;
+
+      case 0xC000:
+        // CHR ROM $FE/0000 bank select ($C000-$CFFF)
+        this.chrBank1 = value & 0x1F;
+        if (this.latchLo === 1) {
+          this.safeSwitchBank(this.chrBank1, 0x0000);
+        }
+        break;
+
+      case 0xD000:
+        // CHR ROM $FD/1000 bank select ($D000-$DFFF)
+        this.chrBank2 = value & 0x1F;
+        if (this.latchHi === 0) {
+          this.safeSwitchBank(this.chrBank2, 0x1000);
+        }
+        break;
+
+      case 0xE000:
+        // CHR ROM $FE/1000 bank select ($E000-$EFFF)
+        this.chrBank3 = value & 0x1F;
+        if (this.latchHi === 1) {
+          this.safeSwitchBank(this.chrBank3, 0x1000);
+        }
+        break;
+
+      case 0xF000:
+        // Mirroring ($F000-$FFFF)
+        if ((value & 1) === 0) {
+          this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING);
+        } else {
+          this.nes.ppu.setMirroring(this.nes.rom.HORIZONTAL_MIRRORING);
+        }
+        break;
+    }
+  }
+
+  /**
+   * Called by PPU when pattern table address is accessed.
+   * Checks for magic tiles ($FD, $FE) and updates latches.
+   */
+  latchAccess(address) {
+    var masked = address & 0x1FF0;
+
+    // Only care about pattern table addresses ($0000-$1FFF)
+    if (address >= 0x2000) return;
+
+    // Check which pattern table (low $0000-$0FFF or high $1000-$1FFF)
+    if ((address & 0x1000) === 0) {
+      if (masked === 0x0FD0) {
+        if (this.latchLo !== 0) {
+          this.latchLo = 0;
+          this.safeSwitchBank(this.chrBank0, 0x0000);
+        }
+      } else if (masked === 0x0FE0) {
+        if (this.latchLo !== 1) {
+          this.latchLo = 1;
+          this.safeSwitchBank(this.chrBank1, 0x0000);
+        }
+      }
+    }
+    else {
+      masked = address & 0x0FF0;
+      if (masked === 0x0FD0) {
+        if (this.latchHi !== 0) {
+          this.latchHi = 0;
+          this.safeSwitchBank(this.chrBank2, 0x1000);
+        }
+      } else if (masked === 0x0FE0) {
+        if (this.latchHi !== 1) {
+          this.latchHi = 1;
+          this.safeSwitchBank(this.chrBank3, 0x1000);
+        }
+      }
+    }
+  }
+
+  loadROM() {
+    if (!this.nes.rom.valid) {
+      throw new Error("MMC2: Invalid ROM! Unable to load.");
+    }
+
+    // Load PRG ROM
+    // First 8KB switchable bank at $8000
+    this.load8kRomBank(0, 0x8000);
+    // Last three 8KB banks fixed at $A000, $C000, $E000
+    const numBanks = this.nes.rom.romCount * 2;
+    this.load8kRomBank(numBanks - 3, 0xA000);
+    this.load8kRomBank(numBanks - 2, 0xC000);
+    this.load8kRomBank(numBanks - 1, 0xE000);
+
+    // Initialize latches to 0 ($FD state)
+    this.latchLo = 0;
+    this.latchHi = 0;
+
+    // Load initial CHR banks based on latch state
+    this.safeSwitchBank(this.chrBank0, 0x0000);
+    this.safeSwitchBank(this.chrBank2, 0x1000);
+
+    // Set initial mirroring
+    this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING);
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+
+  toJSON() {
+    const s = super.toJSON();
+    s.latchLo = this.latchLo;
+    s.latchHi = this.latchHi;
+    s.chrBank0 = this.chrBank0;
+    s.chrBank1 = this.chrBank1;
+    s.chrBank2 = this.chrBank2;
+    s.chrBank3 = this.chrBank3;
+    s.prgBank = this.prgBank;
+    return s;
+  }
+
+  fromJSON(s) {
+    super.fromJSON(s);
+    this.latchLo = s.latchLo;
+    this.latchHi = s.latchHi;
+    this.chrBank0 = s.chrBank0;
+    this.chrBank1 = s.chrBank1;
+    this.chrBank2 = s.chrBank2;
+    this.chrBank3 = s.chrBank3;
+    this.prgBank = s.prgBank;
+  }
+}
+
+/**
+ * Mapper 10 (MMC4) - Fire Emblem, Famicom Wars
+ * 
+ * Similar to MMC2 but with 16KB PRG switching instead of 8KB.
+ */
+class Mapper10 extends Mapper {
+  constructor(nes) {
+    super(nes);
+    this.hasLatch = true;
+    // Initialize all properties in constructor
+    this.latchLo = 0;
+    this.latchHi = 0;
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.chrBank2 = 0;
+    this.chrBank3 = 0;
+    this.prgBank = 0;
+  }
+
+  reset() {
+    super.reset();
+    this.latchLo = 0;
+    this.latchHi = 0;
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.chrBank2 = 0;
+    this.chrBank3 = 0;
+    this.prgBank = 0;
+  }
+
+  write(address, value) {
+    if (address < 0x8000) {
+      super.write(address, value);
+      return;
+    }
+
+    switch (address & 0xF000) {
+      case 0xA000:
+        // PRG ROM bank select - 16KB at $8000
+        this.prgBank = value & 0x0F;
+        this.loadRomBank(this.prgBank, 0x8000);
+        break;
+
+      case 0xB000:
+        this.chrBank0 = value & 0x1F;
+        if (this.latchLo === 0) {
+          this.safeSwitchBank(this.chrBank0, 0x0000);
+        }
+        break;
+
+      case 0xC000:
+        this.chrBank1 = value & 0x1F;
+        if (this.latchLo === 1) {
+          this.safeSwitchBank(this.chrBank1, 0x0000);
+        }
+        break;
+
+      case 0xD000:
+        this.chrBank2 = value & 0x1F;
+        if (this.latchHi === 0) {
+          this.safeSwitchBank(this.chrBank2, 0x1000);
+        }
+        break;
+
+      case 0xE000:
+        this.chrBank3 = value & 0x1F;
+        if (this.latchHi === 1) {
+          this.safeSwitchBank(this.chrBank3, 0x1000);
+        }
+        break;
+
+      case 0xF000:
+        if ((value & 1) === 0) {
+          this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING);
+        } else {
+          this.nes.ppu.setMirroring(this.nes.rom.HORIZONTAL_MIRRORING);
+        }
+        break;
+    }
+  }
+
+  latchAccess(address) {
+    if (address >= 0x2000) return;
+
+    if ((address & 0x1000) === 0) {
+      const masked = address & 0x0FF0;
+      if (masked === 0x0FD0) {
+        if (this.latchLo !== 0) {
+          this.latchLo = 0;
+          this.safeSwitchBank(this.chrBank0, 0x0000);
+        }
+      } else if (masked === 0x0FE0) {
+        if (this.latchLo !== 1) {
+          this.latchLo = 1;
+          this.safeSwitchBank(this.chrBank1, 0x0000);
+        }
+      }
+    } else {
+      const masked = address & 0x0FF0;
+      if (masked === 0x0FD0) {
+        if (this.latchHi !== 0) {
+          this.latchHi = 0;
+          this.safeSwitchBank(this.chrBank2, 0x1000);
+        }
+      } else if (masked === 0x0FE0) {
+        if (this.latchHi !== 1) {
+          this.latchHi = 1;
+          this.safeSwitchBank(this.chrBank3, 0x1000);
+        }
+      }
+    }
+  }
+
+  safeSwitchBank(bank, address) {
+    const rom = this.nes.rom;
+    if (!rom || rom.vromCount === 0 || !rom.vrom) return;
+
+    // Ensure bank is a valid number
+    if (typeof bank !== 'number' || isNaN(bank)) {
+      bank = 0;
+    }
+
+    if (bank >= rom.vromCount) {
+      bank %= rom.vromCount;
+    }
+
+    // Safety check
+    if (!rom.vrom[bank]) return;
+
+    copyArrayElements(rom.vrom[bank], 0, this.nes.ppu.vramMem, address, 4096);
+
+    const vromTile = rom.vromTile[bank];
+    if (vromTile) {
+      const baseIndex = address >> 4;
+      for (let i = 0; i < 256; i++) {
+        this.nes.ppu.ptTile[baseIndex + i] = vromTile[i];
+      }
+    }
+
+    this.nes.ppu.validTileData = false;
+  }
+
+  loadROM() {
+    if (!this.nes.rom.valid) {
+      throw new Error("MMC4: Invalid ROM! Unable to load.");
+    }
+
+    // 16KB switchable at $8000, 16KB fixed at $C000
+    this.loadRomBank(0, 0x8000);
+    this.loadRomBank(this.nes.rom.romCount - 1, 0xC000);
+
+    this.latchLo = 0;
+    this.latchHi = 0;
+
+    this.safeSwitchBank(this.chrBank0, 0x0000);
+    this.safeSwitchBank(this.chrBank2, 0x1000);
+
+    this.nes.ppu.setMirroring(this.nes.rom.VERTICAL_MIRRORING);
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+
+  toJSON() {
+    const s = super.toJSON();
+    s.latchLo = this.latchLo;
+    s.latchHi = this.latchHi;
+    s.chrBank0 = this.chrBank0;
+    s.chrBank1 = this.chrBank1;
+    s.chrBank2 = this.chrBank2;
+    s.chrBank3 = this.chrBank3;
+    s.prgBank = this.prgBank;
+    return s;
+  }
+
+  fromJSON(s) {
+    super.fromJSON(s);
+    this.latchLo = s.latchLo;
+    this.latchHi = s.latchHi;
+    this.chrBank0 = s.chrBank0;
+    this.chrBank1 = s.chrBank1;
+    this.chrBank2 = s.chrBank2;
+    this.chrBank3 = s.chrBank3;
+    this.prgBank = s.prgBank;
+  }
+}
+
+/**
+ * Mapper 11 (Color Dreams)
+ */
+class Mapper11 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else {
+      const prgbank1 = ((value & 0xf) * 2) % this.nes.rom.romCount;
+      const prgbank2 = ((value & 0xf) * 2 + 1) % this.nes.rom.romCount;
+      this.loadRomBank(prgbank1, 0x8000);
+      this.loadRomBank(prgbank2, 0xc000);
+      if (this.nes.rom.vromCount > 0) {
+        const bank = ((value >> 4) * 2) % this.nes.rom.vromCount;
+        this.loadVromBank(bank, 0x0000);
+        this.loadVromBank(bank + 1, 0x1000);
+      }
+    }
+  }
+}
+
+/**
+ * Mapper 34 (BNROM)
+ */
+class Mapper34 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else this.load32kRomBank(value, 0x8000);
+  }
+}
+
+/**
+ * Mapper 38
+ */
+class Mapper38 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x7000 || address > 0x7fff) super.write(address, value);
+    else {
+      this.load32kRomBank(value & 3, 0x8000);
+      this.load8kVromBank(((value >> 2) & 3) * 2, 0x0000);
+    }
+  }
+}
+
+/**
+ * Mapper 66 (GxROM)
+ */
+class Mapper66 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else {
+      this.load32kRomBank((value >> 4) & 3, 0x8000);
+      this.load8kVromBank((value & 3) * 2, 0x0000);
+    }
+  }
+}
+
+/**
+ * Mapper 94 (UN1ROM)
+ */
+class Mapper94 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else this.loadRomBank(value >> 2, 0x8000);
+  }
+  loadROM() {
+    if (!this.nes.rom.valid) throw new Error("UN1ROM: Invalid ROM! Unable to load.");
+    this.loadRomBank(0, 0x8000);
+    this.loadRomBank(this.nes.rom.romCount - 1, 0xc000);
+    this.loadCHRROM();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+}
+
+/**
+ * Mapper 140
+ */
+class Mapper140 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x6000 || address > 0x7fff) super.write(address, value);
+    else {
+      this.load32kRomBank((value >> 4) & 3, 0x8000);
+      this.load8kVromBank((value & 0xf) * 2, 0x0000);
+    }
+  }
+}
+
+/**
+ * Mapper 180
+ */
+class Mapper180 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else this.loadRomBank(value, 0xc000);
+  }
+  loadROM() {
+    if (!this.nes.rom.valid) throw new Error("Mapper 180: Invalid ROM! Unable to load.");
+    this.loadRomBank(0, 0x8000);
+    this.loadRomBank(this.nes.rom.romCount - 1, 0xc000);
+    this.loadCHRROM();
+    this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
+  }
+}
+
+/**
+ * Mapper 240
+ */
+class Mapper240 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x4020 || address > 0x5fff) super.write(address, value);
+    else {
+      this.load32kRomBank((value >> 4) & 3, 0x8000);
+      this.load8kVromBank((value & 0xf) * 2, 0x0000);
+    }
+  }
+}
+
+/**
+ * Mapper 241
+ */
+class Mapper241 extends Mapper {
+  constructor(nes) {
+    super(nes);
+  }
+  write(address, value) {
+    if (address < 0x8000) super.write(address, value);
+    else this.load32kRomBank(value, 0x8000);
+  }
+}
+
+// Export mapping
+export const Mappers = {
+  0: Mapper,
+  1: Mapper1,
+  2: Mapper2,
+  3: Mapper3,
+  4: Mapper4,
+  5: Mapper5,
+  7: Mapper7,
+  9: Mapper9,
+  10: Mapper10,
+  11: Mapper11,
+  34: Mapper34,
+  38: Mapper38,
+  66: Mapper66,
+  94: Mapper94,
+  140: Mapper140,
+  180: Mapper180,
+  240: Mapper240,
+  241: Mapper241
+};
