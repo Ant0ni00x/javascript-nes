@@ -214,7 +214,7 @@ export class PPU {
           // --- MMC2 FIX: Pre-render Sprites for Scanline 0 ---
           // This must happen BEFORE the BG is rendered for Line 0, so that the 
           // MMC2 latches are set correctly by the magic sprites on the pre-render line.
-          if (this.f_spVisibility === 1) {
+            if (this.nes.mmap.hasLatch && this.f_spVisibility === 1) {
               // Render "dummy" sprites for the first visible line (line 0)
               // The output is discarded/overwritten, but the Mapper Latches are triggered.
               this.renderSpritesPartially(0, 1, true);
@@ -257,7 +257,9 @@ export class PPU {
           if (this.f_bgVisibility === 1) {
             
             // --- SYNC FIX: Render sprites before processing BG latches ---
-            this.triggerRendering(); 
+            if (this.nes.mmap.hasLatch) {
+            this.triggerRendering();
+            }
             // -------------------------------------------------------------
 
             if (!this.scanlineAlreadyRendered) {
