@@ -4,7 +4,7 @@ import { toJSON, fromJSON } from "./utils.js";
 export class PPU {
   constructor(nes) {
     this.nes = nes;
-    
+
     this.a12 = 0;   // Track last A12 state for MMC3 IRQ edge detection
 
     // Status flags
@@ -38,12 +38,12 @@ export class PPU {
   reset() {
     this.vramMem = new Array(0x8000).fill(0);
     this.spriteMem = new Array(0x100).fill(0);
-    
+
     this.vramAddress = null;
     this.vramTmpAddress = null;
     this.vramBufferedReadValue = 0;
-    this.firstWrite = true; 
-    this.sramAddress = 0; 
+    this.firstWrite = true;
+    this.sramAddress = 0;
     this.currentMirroring = -1;
     this.requestEndFrame = false;
     this.nmiOk = false;
@@ -51,20 +51,20 @@ export class PPU {
     this.validTileData = false;
     this.nmiCounter = 0;
     this.scanlineAlreadyRendered = null;
-    
-    this.f_nmiOnVblank = 0; 
-    this.f_spriteSize = 0; 
-    this.f_bgPatternTable = 0; 
-    this.f_spPatternTable = 0; 
-    this.f_addrInc = 0; 
-    this.f_nTblAddress = 0; 
 
-    this.f_color = 0; 
-    this.f_spVisibility = 0; 
-    this.f_bgVisibility = 0; 
-    this.f_spClipping = 0; 
-    this.f_bgClipping = 0; 
-    this.f_dispType = 0; 
+    this.f_nmiOnVblank = 0;
+    this.f_spriteSize = 0;
+    this.f_bgPatternTable = 0;
+    this.f_spPatternTable = 0;
+    this.f_addrInc = 0;
+    this.f_nTblAddress = 0;
+
+    this.f_color = 0;
+    this.f_spVisibility = 0;
+    this.f_bgVisibility = 0;
+    this.f_spClipping = 0;
+    this.f_bgClipping = 0;
+    this.f_dispType = 0;
 
     this.cntFV = 0; this.cntV = 0; this.cntH = 0; this.cntVT = 0; this.cntHT = 0;
     this.regFV = 0; this.regV = 0; this.regH = 0; this.regVT = 0; this.regHT = 0;
@@ -81,15 +81,15 @@ export class PPU {
     this.lastRenderedScanline = -1;
     this.curX = 0;
 
-    this.sprX = new Array(64); 
-    this.sprY = new Array(64); 
-    this.sprTile = new Array(64); 
-    this.sprCol = new Array(64); 
-    this.vertFlip = new Array(64); 
-    this.horiFlip = new Array(64); 
-    this.bgPriority = new Array(64); 
-    this.spr0HitX = 0; 
-    this.spr0HitY = 0; 
+    this.sprX = new Array(64);
+    this.sprY = new Array(64);
+    this.sprTile = new Array(64);
+    this.sprCol = new Array(64);
+    this.vertFlip = new Array(64);
+    this.horiFlip = new Array(64);
+    this.bgPriority = new Array(64);
+    this.spr0HitX = 0;
+    this.spr0HitY = 0;
     this.hitSpr0 = false;
 
     this.sprPalette = new Array(16);
@@ -214,11 +214,12 @@ export class PPU {
           // --- MMC2 FIX: Pre-render Sprites for Scanline 0 ---
           // This must happen BEFORE the BG is rendered for Line 0, so that the 
           // MMC2 latches are set correctly by the magic sprites on the pre-render line.
-            if (this.nes.mmap.hasLatch && this.f_spVisibility === 1) {
-              // Render "dummy" sprites for the first visible line (line 0)
-              // The output is discarded/overwritten, but the Mapper Latches are triggered.
-              this.renderSpritesPartially(0, 1, true);
-              this.renderSpritesPartially(0, 1, false);
+
+          if (this.f_spVisibility === 1) {
+            // Render "dummy" sprites for the first visible line (line 0)
+            // The output is discarded/overwritten, but the Mapper Latches are triggered.
+            this.renderSpritesPartially(0, 1, true);
+            this.renderSpritesPartially(0, 1, false);
           }
           // ---------------------------------------------------
 
@@ -235,7 +236,7 @@ export class PPU {
 
         if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
           // Clock mapper IRQ Counter:
-          // this.nes.mmap.clockIrqCounter();
+          this.nes.mmap.clockIrqCounter();
         }
         break;
 
@@ -255,10 +256,9 @@ export class PPU {
         if (this.scanline >= 21 && this.scanline <= 260) {
           // Render normally:
           if (this.f_bgVisibility === 1) {
-            
             // --- SYNC FIX: Render sprites before processing BG latches ---
-            if (this.nes.mmap.hasLatch) {
-            this.triggerRendering();
+            if (this.nes.mmap.isMMC2) {
+              this.triggerRendering();
             }
             // -------------------------------------------------------------
 
@@ -277,7 +277,7 @@ export class PPU {
                 this.sprX[0] < 256 &&
                 this.sprY[0] + 1 <= this.scanline - 20 &&
                 this.sprY[0] + 1 + (this.f_spriteSize === 0 ? 8 : 16) >=
-                  this.scanline - 20
+                this.scanline - 20
               ) {
                 if (this.checkSprite0(this.scanline - 20)) {
                   this.hitSpr0 = true;
@@ -285,7 +285,6 @@ export class PPU {
               }
             }
           }
-
           if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
             // Clock mapper IRQ Counter:
             // this.nes.mmap.clockIrqCounter();
@@ -322,14 +321,14 @@ export class PPU {
     let i, x, y;
     const buffer = this.buffer;
     if (this.showSpr0Hit) {
-        if (this.sprX[0] >= 0 && this.sprX[0] < 256 && this.sprY[0] >= 0 && this.sprY[0] < 240) {
-            for (i = 0; i < 256; i++) buffer[(this.sprY[0] << 8) + i] = 0xff5555;
-            for (i = 0; i < 240; i++) buffer[(i << 8) + this.sprX[0]] = 0xff5555;
-        }
-        if (this.spr0HitX >= 0 && this.spr0HitX < 256 && this.spr0HitY >= 0 && this.spr0HitY < 240) {
-            for (i = 0; i < 256; i++) buffer[(this.spr0HitY << 8) + i] = 0x55ff55;
-            for (i = 0; i < 240; i++) buffer[(i << 8) + this.spr0HitX] = 0x55ff55;
-        }
+      if (this.sprX[0] >= 0 && this.sprX[0] < 256 && this.sprY[0] >= 0 && this.sprY[0] < 240) {
+        for (i = 0; i < 256; i++) buffer[(this.sprY[0] << 8) + i] = 0xff5555;
+        for (i = 0; i < 240; i++) buffer[(i << 8) + this.sprX[0]] = 0xff5555;
+      }
+      if (this.spr0HitX >= 0 && this.spr0HitX < 256 && this.spr0HitY >= 0 && this.spr0HitY < 240) {
+        for (i = 0; i < 256; i++) buffer[(this.spr0HitY << 8) + i] = 0x55ff55;
+        for (i = 0; i < 240; i++) buffer[(i << 8) + this.spr0HitX] = 0x55ff55;
+      }
     }
     if (this.clipToTvSize || this.f_bgClipping === 0 || this.f_spClipping === 0) {
       for (y = 0; y < 240; y++) for (x = 0; x < 8; x++) buffer[(y << 8) + x] = 0;
@@ -337,8 +336,8 @@ export class PPU {
     if (this.clipToTvSize) {
       for (y = 0; y < 240; y++) for (x = 0; x < 8; x++) buffer[(y << 8) + 255 - x] = 0;
       for (y = 0; y < 8; y++) for (x = 0; x < 256; x++) {
-          buffer[(y << 8) + x] = 0;
-          buffer[((239 - y) << 8) + x] = 0;
+        buffer[(y << 8) + x] = 0;
+        buffer[((239 - y) << 8) + x] = 0;
       }
     }
     this.nes.ui.writeFrame(buffer);
@@ -602,7 +601,8 @@ export class PPU {
 
       var t, tpix, att, col;
 
-      var tileCount = isMMC2 ? 34 : 32;
+      // Setting tileCount to 33 fixes MMC2 issues with extended tiles
+      var tileCount = isMMC2 ? 33 : 32;
 
       for (var tile = 0; tile < tileCount; tile++) {
         if (scan >= 0) {
@@ -618,16 +618,15 @@ export class PPU {
           } else {
             // Fetch data:
             var tileIndex = nameTable[this.curNt].getTileIndex(this.cntHT, this.cntVT);
-            
+
             t = ptTile[baseTile + tileIndex];
-            
+
             // --- MMC2 Latch Trigger (Start) ---
             // Trigger AFTER fetching tile data so the NEXT tile sees the new bank
             if (this.nes.mmap && this.nes.mmap.latchAccess) {
-               this.nes.mmap.latchAccess((baseTile === 0 ? 0x0000 : 0x1000) + (tileIndex << 4));
+              this.nes.mmap.latchAccess((baseTile === 0 ? 0x0000 : 0x1000) + (tileIndex << 4));
             }
             // --- MMC2 Latch Trigger (End) ---
-
             if (typeof t === "undefined") {
               continue;
             }
@@ -696,7 +695,7 @@ export class PPU {
 
       // Invalidate fetched data:
       // --- MMC2 FIX: Disable optimization to force latch access every scanline ---
-      this.validTileData = false; 
+      this.validTileData = false;
       // --------------------------------------------------------------------------
     }
   }
@@ -735,7 +734,7 @@ export class PPU {
         }
       }
       // --- End MMC3 A12 Signaling ---
-      
+
       for (var i = 0; i < 64; i++) {
         // --- MMC2 Latch Trigger (Start) ---
         // Latch MUST trigger for every sprite on the scanline, 
@@ -748,20 +747,20 @@ export class PPU {
           this.sprY[i] + latchSpriteHeight >= startscan &&
           this.sprY[i] < startscan + scancount
         ) {
-             if(this.nes.mmap && this.nes.mmap.latchAccess) {
-                 if (this.f_spriteSize === 0) {
-                     // 8x8
-                     var bankBase = (this.f_spPatternTable === 0) ? 0x0000 : 0x1000;
-                     this.nes.mmap.latchAccess(bankBase + (this.sprTile[i] << 4));
-                 } else {
-                     // 8x16
-                     var top = this.sprTile[i];
-                     var bank = (top & 1) ? 0x1000 : 0x0000;
-                     var topTileIndex = top & 0xFE;
-                     this.nes.mmap.latchAccess(bank + (topTileIndex << 4)); // Top
-                     this.nes.mmap.latchAccess(bank + ((topTileIndex + 1) << 4)); // Bottom
-                 }
-             }
+          if (this.nes.mmap && this.nes.mmap.latchAccess) {
+            if (this.f_spriteSize === 0) {
+              // 8x8
+              var bankBase = (this.f_spPatternTable === 0) ? 0x0000 : 0x1000;
+              this.nes.mmap.latchAccess(bankBase + (this.sprTile[i] << 4));
+            } else {
+              // 8x16
+              var top = this.sprTile[i];
+              var bank = (top & 1) ? 0x1000 : 0x0000;
+              var topTileIndex = top & 0xFE;
+              this.nes.mmap.latchAccess(bank + (topTileIndex << 4)); // Top
+              this.nes.mmap.latchAccess(bank + ((topTileIndex + 1) << 4)); // Bottom
+            }
+          }
         }
         // --- MMC2 Latch Trigger (End) ---
 
@@ -794,26 +793,26 @@ export class PPU {
 
             // Safety check: Only render if tile exists
             if (t) {
-                t.render(
-                  this.buffer,
-                  0,
-                  this.srcy1,
-                  8,
-                  this.srcy2,
-                  this.sprX[i],
-                  this.sprY[i] + 1,
-                  this.sprCol[i],
-                  this.sprPalette,
-                  this.horiFlip[i],
-                  this.vertFlip[i],
-                  i,
-                  this.pixrendered
-                );
+              t.render(
+                this.buffer,
+                0,
+                this.srcy1,
+                8,
+                this.srcy2,
+                this.sprX[i],
+                this.sprY[i] + 1,
+                this.sprCol[i],
+                this.sprPalette,
+                this.horiFlip[i],
+                this.vertFlip[i],
+                i,
+                this.pixrendered
+              );
             }
           } else {
             // 8x16 sprites
             var top = this.sprTile[i];
-            
+
             if ((top & 1) !== 0) {
               top = this.sprTile[i] - 1 + 256;
             }
@@ -832,21 +831,21 @@ export class PPU {
             var t1 = this.ptTile[top + (this.vertFlip[i] ? 1 : 0)];
             // Safety check: Only render if tile exists
             if (t1) {
-                t1.render(
-                  this.buffer,
-                  0,
-                  srcy1,
-                  8,
-                  srcy2,
-                  this.sprX[i],
-                  this.sprY[i] + 1,
-                  this.sprCol[i],
-                  this.sprPalette,
-                  this.horiFlip[i],
-                  this.vertFlip[i],
-                  i,
-                  this.pixrendered
-                );
+              t1.render(
+                this.buffer,
+                0,
+                srcy1,
+                8,
+                srcy2,
+                this.sprX[i],
+                this.sprY[i] + 1,
+                this.sprCol[i],
+                this.sprPalette,
+                this.horiFlip[i],
+                this.vertFlip[i],
+                i,
+                this.pixrendered
+              );
             }
 
             srcy1 = 0;
@@ -863,21 +862,21 @@ export class PPU {
             var t2 = this.ptTile[top + (this.vertFlip[i] ? 0 : 1)];
             // Safety check: Only render if tile exists
             if (t2) {
-                t2.render(
-                  this.buffer,
-                  0,
-                  srcy1,
-                  8,
-                  srcy2,
-                  this.sprX[i],
-                  this.sprY[i] + 1 + 8,
-                  this.sprCol[i],
-                  this.sprPalette,
-                  this.horiFlip[i],
-                  this.vertFlip[i],
-                  i,
-                  this.pixrendered
-                );
+              t2.render(
+                this.buffer,
+                0,
+                srcy1,
+                8,
+                srcy2,
+                this.sprX[i],
+                this.sprY[i] + 1 + 8,
+                this.sprCol[i],
+                this.sprPalette,
+                this.horiFlip[i],
+                this.vertFlip[i],
+                i,
+                this.pixrendered
+              );
             }
           }
         }
@@ -905,7 +904,7 @@ export class PPU {
         // Sprite is in range.
         // Draw scanline:
         t = this.ptTile[this.sprTile[0] + tIndexAdd];
-        
+
         // --- SAFETY CHECK ---
         if (!t) return false;
         // --------------------
@@ -974,15 +973,15 @@ export class PPU {
           // first half of sprite.
           t = this.ptTile[
             this.sprTile[0] +
-              (this.vertFlip[0] ? 1 : 0) +
-              ((this.sprTile[0] & 1) !== 0 ? 255 : 0)
+            (this.vertFlip[0] ? 1 : 0) +
+            ((this.sprTile[0] & 1) !== 0 ? 255 : 0)
           ];
         } else {
           // second half of sprite.
           t = this.ptTile[
             this.sprTile[0] +
-              (this.vertFlip[0] ? 0 : 1) +
-              ((this.sprTile[0] & 1) !== 0 ? 255 : 0)
+            (this.vertFlip[0] ? 0 : 1) +
+            ((this.sprTile[0] & 1) !== 0 ? 255 : 0)
           ];
           if (this.vertFlip[0]) {
             toffset = 15 - toffset;
@@ -990,11 +989,11 @@ export class PPU {
             toffset -= 8;
           }
         }
-        
+
         // --- SAFETY CHECK ---
         if (!t) return false;
         // --------------------
-        
+
         toffset *= 8;
 
         bufferIndex = scan * 256 + x;
@@ -1042,30 +1041,30 @@ export class PPU {
   }
 
   _checkSpriteHitLoop(scan, x, t, toffset) {
-      let bufferIndex = scan * 256 + x;
-      if (this.horiFlip[0]) {
-          for (let i = 7; i >= 0; i--) {
-              if (x >= 0 && x < 256 && bufferIndex >= 0 && bufferIndex < 61440 && this.pixrendered[bufferIndex] !== 0) {
-                  if (t.pix[toffset + i] !== 0) {
-                      this.spr0HitX = bufferIndex % 256;
-                      this.spr0HitY = scan;
-                      return;
-                  }
-              }
-              x++; bufferIndex++;
+    let bufferIndex = scan * 256 + x;
+    if (this.horiFlip[0]) {
+      for (let i = 7; i >= 0; i--) {
+        if (x >= 0 && x < 256 && bufferIndex >= 0 && bufferIndex < 61440 && this.pixrendered[bufferIndex] !== 0) {
+          if (t.pix[toffset + i] !== 0) {
+            this.spr0HitX = bufferIndex % 256;
+            this.spr0HitY = scan;
+            return;
           }
-      } else {
-          for (let i = 0; i < 8; i++) {
-              if (x >= 0 && x < 256 && bufferIndex >= 0 && bufferIndex < 61440 && this.pixrendered[bufferIndex] !== 0) {
-                  if (t.pix[toffset + i] !== 0) {
-                      this.spr0HitX = bufferIndex % 256;
-                      this.spr0HitY = scan;
-                      return;
-                  }
-              }
-              x++; bufferIndex++;
-          }
+        }
+        x++; bufferIndex++;
       }
+    } else {
+      for (let i = 0; i < 8; i++) {
+        if (x >= 0 && x < 256 && bufferIndex >= 0 && bufferIndex < 61440 && this.pixrendered[bufferIndex] !== 0) {
+          if (t.pix[toffset + i] !== 0) {
+            this.spr0HitX = bufferIndex % 256;
+            this.spr0HitY = scan;
+            return;
+          }
+        }
+        x++; bufferIndex++;
+      }
+    }
   }
 
   writeMem(address, value) {
@@ -1162,7 +1161,7 @@ class NameTable {
 
   getTileIndex(x, y) { return this.tile[y * this.width + x]; }
   getAttrib(x, y) { return this.attrib[y * this.width + x]; }
-  
+
   writeAttrib(index, value) {
     const basex = (index % 8) * 4;
     const basey = Math.floor(index / 8) * 4;
@@ -1190,9 +1189,9 @@ class PaletteTable {
     this.emphTable = new Array(8);
     this.currentEmph = -1;
   }
-  
+
   reset() { this.setEmphasis(0); }
-  
+
   loadNTSCPalette() {
     this.curTable = [0x525252, 0xB40000, 0xA00000, 0xB1003D, 0x740069, 0x00005B, 0x00005F, 0x001840, 0x002F10, 0x084A08, 0x006700, 0x124200, 0x6D2800, 0x000000, 0x000000, 0x000000, 0xC4D5E7, 0xFF4000, 0xDC0E22, 0xFF476B, 0xD7009F, 0x680AD7, 0x0019BC, 0x0054B1, 0x006A5B, 0x008C03, 0x00AB00, 0x2C8800, 0xA47200, 0x000000, 0x000000, 0x000000, 0xF8F8F8, 0xFFAB3C, 0xFF7981, 0xFF5BC5, 0xFF48F2, 0xDF49FF, 0x476DFF, 0x00B4F7, 0x00E0FF, 0x00E375, 0x03F42B, 0x78B82E, 0xE5E218, 0x787878, 0x000000, 0x000000, 0xFFFFFF, 0xFFF2BE, 0xF8B8B8, 0xF8B8D8, 0xFFB6FF, 0xFFC3FF, 0xC7D1FF, 0x9ADAFF, 0x88EDF8, 0x83FFDD, 0xB8F8B8, 0xF5F8AC, 0xFFFFB0, 0xF8D8F8, 0x000000, 0x000000];
     this.makeTables();
