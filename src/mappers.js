@@ -1,8 +1,8 @@
 import { copyArrayElements } from "./utils.js";
 
-/**
- * Base Mapper (Mapper 0 / NROM)
- */
+// ============================================================
+// Base Mapper (Mapper 0 / NROM)
+// ============================================================
 export class Mapper {
   constructor(nes) {
     this.nes = nes;
