@@ -100,11 +100,19 @@ Audio samples are batched and sent to the worklet to minimize postMessage overhe
 
 Based on [JSNES](https://github.com/bfirsh/jsnes) by Ben Firshman, which was based on vNES by Jamie Sanders.
 
-Modernization and mapper fixes by the contributors to this fork.
+Modernization and mapper fixes contributed by Antonio Armstrong.
+AI Coding Assistance:
+- [Claude Code]{https://claude.com/)
+- [ChatGPT](https://chatgpt.com/)
+- [Gemini](https://gemini.google.com/)
+- [Copilot](https://copilot.microsoft.com/)
+- [Grok](https://copilot.microsoft.com/)
+
+If you want to assist, please take a look at the technical document and give it a whirl!
 
 ## License
 
-This project inherits the GPL v3 license.
+This project is under the GPL v3 license.
 
 ## Legal
 
