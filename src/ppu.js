@@ -214,7 +214,6 @@ export class PPU {
           // --- MMC2 FIX: Pre-render Sprites for Scanline 0 ---
           // This must happen BEFORE the BG is rendered for Line 0, so that the 
           // MMC2 latches are set correctly by the magic sprites on the pre-render line.
-
           if ( this.nes.mmap.hasChrLatch === true && this.f_spVisibility === 1) {
             // Render "dummy" sprites for the first visible line (line 0)
             // The output is discarded/overwritten, but the Mapper Latches are triggered.
@@ -233,16 +232,10 @@ export class PPU {
           // Check sprite 0 hit for first scanline:
           this.checkSprite0(0);
         }
-
-        if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
-          // Clock mapper IRQ Counter:
-          this.nes.mmap.clockIrqCounter();
-        }
         break;
 
       case 261:
-        // Dead scanline, no rendering.
-        // Set VINT:
+        // Set VINT: Dead scanline, no rendering.
         this.setStatusFlag(this.STATUS_VBLANK, true);
         this.requestEndFrame = true;
         this.nmiCounter = 9;
@@ -255,20 +248,14 @@ export class PPU {
       default:
          if (this.scanline >= 21 && this.scanline <= 260) {
           // Render normally:
-          if (this.f_bgVisibility === 1) {
-            
+          if (this.f_bgVisibility === 1) {    
             // --- SYNC FIX: Render sprites before processing BG latches ---
-            if (this.nes.mmap.hasMMC1Features === true) {
-              // this.triggerRendering();
-            }
-            if (this.nes.mmap.hasMMC2Features === true) {
+            if (this.nes.mmap.hasChrLatch === true) {
               this.triggerRendering();
             }
-            if (this.nes.mmap.hasMMC3Features === true) {
+            if (this.nes.mmap.hasScanlineIrq === true) {
               this.triggerRendering();
             }
-            // -------------------------------------------------------------
-
             if (!this.scanlineAlreadyRendered) {
               // update scroll:
               this.cntHT = this.regHT;
@@ -292,17 +279,17 @@ export class PPU {
               }
             }
           }
-
-          if (this.f_bgVisibility === 1 || this.f_spVisibility === 1) {
-            // Clock mapper IRQ Counter:
-            // this.nes.mmap.clockIrqCounter();
-          }
         }
     }
 
     this.scanline++;
     this.regsToAddress();
     this.cntsToAddress();
+
+    const mmap = this.nes.mmap;
+    if (mmap.hasPpuScanlineHook) {
+      mmap.onEndScanline(this.scanline);
+    }
   }
 
   startFrame() {
@@ -425,18 +412,28 @@ export class PPU {
     }
     this.firstWrite = !this.firstWrite;
     this.cntsToAddress();
-    if (this.vramAddress < 0x2000) this.nes.mmap.latchAccess(this.vramAddress);
+    const mmap = this.nes.mmap;
+    if (this.vramAddress < 0x2000 && typeof mmap?.latchAccess === "function") {
+      mmap.latchAccess(this.vramAddress);
+    }
   }
 
   vramLoad() {
     let tmp;
     this.cntsToAddress();
     this.regsToAddress();
+    const mmap = this.nes.mmap;
+    if (mmap.hasPpuAddressHook) {
+      mmap.ppuAddressUpdate(this.vramAddress);
+    }
     if (this.vramAddress <= 0x3eff) {
       tmp = this.vramBufferedReadValue;
       if (this.vramAddress < 0x2000) this.vramBufferedReadValue = this.vramMem[this.vramAddress];
       else this.vramBufferedReadValue = this.mirroredLoad(this.vramAddress);
-      if (this.vramAddress < 0x2000) this.nes.mmap.latchAccess(this.vramAddress);
+      const mmap = this.nes.mmap;
+    if (this.vramAddress < 0x2000 && typeof mmap?.latchAccess === "function") {
+      mmap.latchAccess(this.vramAddress);
+    }
       this.vramAddress += this.f_addrInc === 1 ? 32 : 1;
       this.cntsFromAddress(); this.regsFromAddress();
       return tmp;
@@ -451,10 +448,17 @@ export class PPU {
     this.triggerRendering();
     this.cntsToAddress();
     this.regsToAddress();
+    const mmap = this.nes.mmap;
+    if (typeof mmap?.ppuAddressUpdate === "function") {
+      mmap.ppuAddressUpdate(this.vramAddress);
+    }
     if (this.vramAddress >= 0x2000) this.mirroredWrite(this.vramAddress, value);
     else {
       this.writeMem(this.vramAddress, value);
-      this.nes.mmap.latchAccess(this.vramAddress);
+      const mmap = this.nes.mmap;
+      if (mmap?.hasChrLatch === true && typeof mmap.latchAccess === "function") {
+        mmap.latchAccess(this.vramAddress);
+      }
     }
     this.vramAddress += this.f_addrInc === 1 ? 32 : 1;
     this.regsFromAddress();
@@ -537,17 +541,35 @@ export class PPU {
   }
 
   mirroredLoad(address) {
+    // MMC5 (and any future mapper) nametable override:
+    if (address >= 0x2000 && address < 0x3000) {
+      const mmap = this.nes.mmap;
+      if (mmap.hasNametableOverride) {
+        return mmap.readNametable(address);
+      }
+    }
     return this.vramMem[this.vramMirrorTable[address]];
   }
 
   mirroredWrite(address, value) {
     if (address >= 0x3f00 && address < 0x3f20) {
-      if (address === 0x3f00 || address === 0x3f10) { this.writeMem(0x3f00, value); this.writeMem(0x3f10, value); }
+      if (address === 0x3f00 || address === 0x3f10) { 
+        this.writeMem(0x3f00, value); this.writeMem(0x3f10, value); 
+      }
       else if (address === 0x3f04 || address === 0x3f14) { this.writeMem(0x3f04, value); this.writeMem(0x3f14, value); }
       else if (address === 0x3f08 || address === 0x3f18) { this.writeMem(0x3f08, value); this.writeMem(0x3f18, value); }
       else if (address === 0x3f0c || address === 0x3f1c) { this.writeMem(0x3f0c, value); this.writeMem(0x3f1c, value); }
       else this.writeMem(address, value);
+      return;
     } else {
+      // MMC5 (and any future mapper) nametable override:
+      if (address >= 0x2000 && address < 0x3000) {
+        const mmap = this.nes.mmap;
+        if (mmap.hasNametableOverride) {
+          mmap.writeNametable(address, value);
+          return;
+        }
+      }
       if (address < this.vramMirrorTable.length) this.writeMem(this.vramMirrorTable[address], value);
       else throw new Error("Invalid VRAM address: " + address.toString(16));
     }
@@ -578,18 +600,21 @@ export class PPU {
   }
 
   renderBgScanline(bgbuffer, scan) {
-    var isMMC2 = this.nes.rom && this.nes.rom.mapperType === 9;
+    const hasChrLatch = this.nes.mmap?.hasChrLatch === true;
     var baseTile = this.regS === 0 ? 0 : 256;
     var destIndex = (scan << 8) - this.regFH;
 
-    // --- MMC3 A12 Signaling ---
     // Signal A12 for BG pattern table at start of BG rendering.
     // This creates the low state before sprite fetches cause the rising edge.
-    var mmap = this.nes.mmap;
-    if (mmap && typeof mmap.notifyA12 === "function") {
+    const mmap = this.nes.mmap;
+    if (mmap.hasScanlineIrq) {
       mmap.notifyA12(this.f_bgPatternTable);
     }
-    // --- End MMC3 A12 Signaling ---
+    
+    // MMC5 A13 Signaling
+    if (mmap.hasPpuA13ChrSwitch) {
+      mmap.notifyPpuA13(this.f_bgPatternTable);
+    }
 
     this.curNt = this.ntable1[this.cntV + this.cntV + this.cntH];
 
@@ -609,7 +634,7 @@ export class PPU {
 
       var t, tpix, att, col;
 
-      var tileCount = isMMC2 ? 33 : 32;
+      var tileCount = hasChrLatch ? 33 : 32;
 
       for (var tile = 0; tile < tileCount; tile++) {
         if (scan >= 0) {
@@ -630,8 +655,13 @@ export class PPU {
 
             // --- MMC2 Latch Trigger (Start) ---
             // Trigger AFTER fetching tile data so the NEXT tile sees the new bank
-            if (this.nes.mmap.hasChrLatch === true && this.nes.mmap.latchAccess) {
-              this.nes.mmap.latchAccess((baseTile === 0 ? 0x0000 : 0x1000) + (tileIndex << 4));
+            if ((mmap?.hasChrLatch === true) && typeof mmap.latchAccess === "function") {
+              const ptBase = (baseTile === 0 ? 0x0000 : 0x1000);
+              const fineY = this.cntFV & 7;
+              const addrLo = ptBase + (tileIndex << 4) + fineY;
+              const addrHi = addrLo + 8;
+              mmap.latchAccess(addrLo);
+              mmap.latchAccess(addrHi);
             }
             // --- MMC2 Latch Trigger (End) ---
             if (typeof t === "undefined") {
@@ -699,27 +729,27 @@ export class PPU {
         this.cntVT = 0;
       }
       // Invalidate fetched data:
-      // --- MMC2 FIX: Disable optimization to force latch access every scanline ---
       this.validTileData = false;
       // --------------------------------------------------------------------------
     }
   }
 
   renderSpritesPartially(startscan, scancount, bgPri) {
+    const mmap = this.nes.mmap;
     if (this.f_spVisibility === 1) {
       // --- MMC3 A12 Signaling ---
       // Signal A12 transitions for sprite pattern fetches.
       // On real hardware, sprite fetches cause A12 to reflect the sprite pattern table.
       // This is critical for MMC3 scanline counter timing.
-      var mmap = this.nes.mmap;
-      if (mmap && typeof mmap.notifyA12 === "function") {
+      if (mmap?.hasScanlineIrq === true && typeof mmap.notifyA12 === "function") {
+        // 8x8 sprites use the configured pattern table
+          mmap.notifyA12(this.f_spPatternTable);
         // Signal the sprite pattern table address (A12 = 1 for $1000, 0 for $0000)
         // For 8x8 sprites, it's based on f_spPatternTable
         // For 8x16 sprites, each sprite can use either bank, but typically
         // the first sprite fetch triggers the A12 transition
         if (this.f_spriteSize === 0) {
-          // 8x8 sprites use the configured pattern table
-          mmap.notifyA12(this.f_spPatternTable);
+          
         } else {
           // 8x16 sprites - signal based on first visible sprite's bank
           // Default to A12=1 which is typical for SMB3 (sprites use $1000)
@@ -740,30 +770,43 @@ export class PPU {
       }
       // --- End MMC3 A12 Signaling ---
 
-      for (var i = 0; i < 64; i++) {
+      // --- MMC5 A13 Signaling (Sprite CHR mode) ---
+      if (mmap.hasPpuA13ChrSwitch) {
+        mmap.notifyPpuA13(this.f_spPatternTable);
+      }
 
+      for (var i = 0; i < 64; i++) {
         // --- MMC2 Latch Trigger (Start) ---
-        // Latch MUST trigger for every sprite on the scanline, 
-        // regardless of priority (bgPri) or visibility.
+        // Latch MUST trigger for every sprite on the scanline regardless of priority (bgPri) or visibility.
         // We do this check for correct sprite height (8 or 16) for visibility check
-        if (this.nes.mmap.hasMMC2Features === true) {
-          var latchSpriteHeight = (this.f_spriteSize === 0) ? 8 : 16;
-          if (
-            this.sprY[i] + latchSpriteHeight >= startscan &&
-            this.sprY[i] < startscan + scancount
-          ) {
-            if (this.nes.mmap && this.nes.mmap.latchAccess) {
+        if ((mmap?.hasChrLatch === true) && typeof mmap.latchAccess === "function") {
+          const endScan = startscan + scancount;
+          const spriteHeightForLatch = (this.f_spriteSize === 0) ? 8 : 16;
+
+          if (this.sprY[i] + spriteHeightForLatch >= startscan && this.sprY[i] < endScan) {
+            // Clamp to the overlapping scanline range
+            const from = Math.max(startscan, this.sprY[i]);
+            const to = Math.min(endScan, this.sprY[i] + spriteHeightForLatch);
+
+            for (let sl = from; sl < to; sl++) {
+              let row = sl - this.sprY[i];
+              if (row < 0) continue;
+
               if (this.f_spriteSize === 0) {
-                // 8x8
-                var bankBase = (this.f_spPatternTable === 0) ? 0x0000 : 0x1000;
-                this.nes.mmap.latchAccess(bankBase + (this.sprTile[i] << 4));
+                // 8x8 sprites: bank from f_spPatternTable
+                const ptBase = (this.f_spPatternTable === 0) ? 0x0000 : 0x1000;
+                const addrLo = ptBase + (this.sprTile[i] << 4) + (row & 7);
+                mmap.latchAccess(addrLo);
+                mmap.latchAccess(addrLo + 8);
               } else {
-                // 8x16
-                var top = this.sprTile[i];
-                var bank = (top & 1) ? 0x1000 : 0x0000;
-                var topTileIndex = top & 0xFE;
-                this.nes.mmap.latchAccess(bank + (topTileIndex << 4)); // Top
-                this.nes.mmap.latchAccess(bank + ((topTileIndex + 1) << 4)); // Bottom
+                // 8x16 sprites: bank from tile bit0, tile index from bits7..1
+                const top = this.sprTile[i] & 0xFF;
+                const ptBase = (top & 1) ? 0x1000 : 0x0000;
+                let tileIndex = top & 0xFE;
+                if (row >= 8) { tileIndex += 1; row -= 8; }
+                const addrLo = ptBase + (tileIndex << 4) + (row & 7);
+                mmap.latchAccess(addrLo);
+                mmap.latchAccess(addrLo + 8);
               }
             }
           }
@@ -903,9 +946,7 @@ export class PPU {
     y = this.sprY[0] + 1;
 
     if (this.f_spriteSize === 0) {
-      // 8x8 sprites.
-
-      // Check range:
+      // Check range: 8x8 sprites.
       if (y <= scan && y + 8 > scan && x >= -7 && x < 256) {
         // Sprite is in range.
         // Draw scanline:
@@ -962,9 +1003,7 @@ export class PPU {
         }
       }
     } else {
-      // 8x16 sprites:
-
-      // Check range:
+      // Check range: 8x16 sprites:
       if (y <= scan && y + 16 > scan && x >= -7 && x < 256) {
         // Sprite is in range.
         // Draw scanline:
@@ -999,9 +1038,7 @@ export class PPU {
         // --- SAFETY CHECK ---
         if (!t) return false;
         // --------------------
-
         toffset *= 8;
-
         bufferIndex = scan * 256 + x;
         if (this.horiFlip[0]) {
           for (i = 7; i >= 0; i--) {
@@ -1042,7 +1079,6 @@ export class PPU {
         }
       }
     }
-
     return false;
   }
 
