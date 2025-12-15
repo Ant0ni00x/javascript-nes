@@ -102,7 +102,7 @@ Based on [JSNES](https://github.com/bfirsh/jsnes) by Ben Firshman, which was bas
 
 Modernization and mapper fixes contributed by Antonio Armstrong.
 AI Coding Assistance:
-- [Claude Code]{https://claude.com/)
+- [Claude Code](https://claude.com/)
 - [ChatGPT](https://chatgpt.com/)
 - [Gemini](https://gemini.google.com/)
 - [Copilot](https://copilot.microsoft.com/)
