@@ -4,12 +4,16 @@ A modernized Nintendo Entertainment System (NES) emulator written in JavaScript.
 
 ## Features
 
-- **Pure JavaScript** — Runs in any modern browser, no plugins required
-- **ES6 Modules** — Clean, maintainable codebase with proper imports/exports
-- **Modern Audio** — AudioWorklet-based sound with ScriptProcessor fallback
-- **Accurate Mappers** — Working implementations of MMC1, MMC2, MMC3, MMC4, and more
-- **Drag & Drop** — Load ROMs by dragging .nes files onto the emulator
-- **Gamepad Support** — Native browser Gamepad API integration
+- ✅ **Pure JavaScript** — Runs in any modern browser, no plugins required
+- ✅ **ES6 Modules** — Clean, maintainable codebase with proper imports/exports
+- ✅ **Modern Audio** — AudioWorklet-based sound with ScriptProcessor fallback
+- ✅ **Accurate Mappers** — Working implementations of MMC1, MMC2, MMC3, MMC4, and more
+- ✅ **Drag & Drop** — Load ROMs by dragging .nes files onto the emulator
+- ✅ **Gamepad Support** — Native browser Gamepad API integration
+- ✅ **MMC2 fully working!** (Punch-Out!! is one of the best stress tests there is)
+- ✅ **Correct latch timing** (fine-Y + both bitplanes)
+- ✅ **Pure behavioral capability** flags instead of mapper IDs
+- ✅ A PPU that no longer “knows” about mappers
 
 ## Quick Start
 
