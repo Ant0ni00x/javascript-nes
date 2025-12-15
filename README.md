@@ -1,28 +1,28 @@
-# JavaScript-NES - Modernized
+# JavaScript-NES - Modernized JavaScript NES Emulator
 
-A modernized Nintendo Entertainment System (NES) emulator written in JavaScript. This is a heavily refactored fork featuring ES6 modules, accurate mapper implementations, modern Web Audio API support, and an overhauled user interface.
+A modernized Nintendo Entertainment System (NES) emulator written in JavaScript. This fork focuses on **accuracy, maintainability, and clean architecture**, with particular emphasis on correct mapper behavior and long-term extensibility.
 
 ## Features
 
-- ✅ **Pure JavaScript** — Runs in any modern browser, no plugins required
-- ✅ **ES6 Modules** — Clean, maintainable codebase with proper imports/exports
-- ✅ **Modern Audio** — AudioWorklet-based sound with ScriptProcessor fallback
-- ✅ **Accurate Mappers** — Working implementations of MMC1, MMC2, MMC3, MMC4, and more
-- ✅ **Drag & Drop** — Load ROMs by dragging .nes files onto the emulator
-- ✅ **Gamepad Support** — Native browser Gamepad API integration
-- ✅ **MMC2 fully working!** (Punch-Out!! is one of the best stress tests there is)
-- ✅ **Correct latch timing** (fine-Y + both bitplanes)
-- ✅ **Pure behavioral capability** flags instead of mapper IDs
-- ✅ A PPU that no longer “knows” about mappers
+* ✅ **Pure JavaScript** — Runs in any modern browser, no plugins required
+* ✅ **ES6 Modules** — Clean, maintainable codebase with proper imports/exports
+* ✅ **Modern Audio** — AudioWorklet-based sound with ScriptProcessor fallback
+* ✅ **Capability‑Driven Mappers** — The PPU interacts with mappers strictly through declared behavioral capabilities (no mapper IDs, no method‑presence heuristics)
+* ✅ **Accurate Mapper Emulation** — Correct MMC1, MMC2, MMC3, MMC4, and MMC5 behavior
+* ✅ **CHR Latch Accuracy** — Hardware‑accurate MMC2/MMC4 latch triggering using real pattern fetch addresses (fine‑Y + both bitplanes)
+* ✅ **Stable IRQ Timing** — MMC3 IRQs driven by true A12 rising‑edge detection
+* ✅ **Drag & Drop ROM Loading** — Load `.nes` files directly into the emulator
+* ✅ **Gamepad Support** — Native browser Gamepad API integration
 
 ## Quick Start
 
 1. Clone or download this repository
 2. Serve the files with any HTTP server:
+
    ```bash
    # Python 3
    python -m http.server 8000
-   
+
    # Node.js
    npx serve
    ```
@@ -31,15 +31,15 @@ A modernized Nintendo Entertainment System (NES) emulator written in JavaScript.
 
 ## Controls
 
-| Key | Action |
-|-----|--------|
-| Arrow Keys | D-Pad |
-| A / Q | A Button |
-| S / O | B Button |
-| Enter | Start |
-| Tab | Select |
+| Key        | Action   |
+| ---------- | -------- |
+| Arrow Keys | D‑Pad    |
+| A / Q      | A Button |
+| S / O      | B Button |
+| Enter      | Start    |
+| Tab        | Select   |
 
-Gamepad support is automatic — connect an Xbox or similar controller.
+Gamepad support is automatic.
 
 ## Project Structure
 
@@ -47,69 +47,43 @@ Gamepad support is automatic — connect an Xbox or similar controller.
 ├── nes-embed.htm          # Main HTML interface
 ├── nes-embed.css          # Stylesheet for modernized UI
 ├── nes-embed.js           # Frontend: canvas, audio, input handling
-├── nes-audio-worklet.js   # AudioWorklet processor for low-latency sound
+├── nes-audio-worklet.js   # AudioWorklet processor
 └── src/
-    ├── nes.js             # Refactored Main emulator orchestrator
-    ├── cpu.js             # Refactored 6502 CPU emulation with illegal opcodes
-    ├── ppu.js             # Refactored Picture Processing Unit
-    ├── papu.js            # Refactored Audio Processing Unit (APU)
-    ├── rom.js             # Refactored iNES ROM parser
-    ├── mappers.js         # Refactored Memory mapper implementations
-    ├── controller.js      # Updated Input handling
-    ├── tile.js            # Refactored Tile/sprite rendering
-    ├── utils.js           # Updated Utility functions
-    └── index.js           # Updated Module exports
+    ├── nes.js             # Emulator orchestrator
+    ├── cpu.js             # 6502 CPU emulation
+    ├── ppu.js             # Picture Processing Unit (renderer)
+    ├── papu.js            # Audio Processing Unit (APU)
+    ├── rom.js             # iNES ROM parser
+    ├── mappers.js         # Mapper implementations
+    ├── controller.js      # Input handling
+    ├── tile.js            # Tile/sprite helpers
+    └── utils.js           # Shared utilities
 ```
 
 ## Supported Mappers
 
-| # | Name | Example Games |
-|---|------|---------------|
-| 0 | NROM | Super Mario Bros., Donkey Kong |
-| 1 | MMC1 | The Legend of Zelda, Metroid |
-| 2 | UxROM | Mega Man, Castlevania |
-| 3 | CNROM | Gradius, Paperboy |
-| 4 | MMC3 | Super Mario Bros. 2/3, Kirby's Adventure |
-| 5 | MMC5 | Castlevania III (partial support, still working on it!) |
-| 7 | AxROM | Battletoads |
-| 9 | MMC2 | Punch-Out!! |
-| 10 | MMC4 | Fire Emblem |
-| 11 | Color Dreams | Bible Adventures |
-| 34 | BNROM | Deadly Towers |
-| 66 | GxROM | Super Mario Bros. + Duck Hunt |
+| Mapper    | Status | Notes                                   |
+| --------- | ------ | --------------------------------------- |
+| NROM (0)  | ✅      | Baseline mapper                         |
+| MMC1 (1)  | ✅      | Correct shift‑register behavior         |
+| UxROM (2) | ✅      | PRG banking                             |
+| CNROM (3) | ✅      | CHR banking                             |
+| MMC3 (4)  | ✅      | A12‑driven IRQs                         |
+| MMC5 (5)  | 🟡     | ExRAM + split screen support evolving   |
+| MMC2 (9)  | ✅      | Accurate CHR latch timing (Punch‑Out!!) |
+| MMC4 (10) | ✅      | Dual latch variant                      |
 
-## Browser Requirements
+## Design Philosophy
 
-- Modern browser with ES6 module support
-- AudioWorklet support (Chrome 66+, Firefox 76+, Safari 14.1+)
-- Falls back to ScriptProcessor on older browsers
+This emulator intentionally avoids hard‑coding mapper IDs inside the PPU or CPU. Instead:
 
-## API Usage
+* Each mapper **declares behavioral capabilities** (e.g. CHR latch, A12 IRQ, nametable override)
+* The PPU calls mapper hooks **only when the corresponding capability flag is set**
+* If a capability is declared, the mapper guarantees the required method exists
 
-```javascript
-import { NES } from './src/nes.js';
-import { Controller } from './src/controller.js';
+This approach prevents cross‑mapper regressions and makes new mappers significantly easier to add.
 
-const nes = new NES({
-  onFrame: (framebuffer) => { /* render 256x240 RGB buffer */ },
-  onAudioSample: (left, right) => { /* handle audio sample */ },
-  sampleRate: 44100
-});
-
-// Load ROM (as string with charCodeAt for byte access)
-nes.loadROM(romData);
-
-// Run one frame
-nes.frame();
-
-// Input
-nes.buttonDown(1, Controller.BUTTON_A);
-nes.buttonUp(1, Controller.BUTTON_A);
-
-// Save/Load state. Not yet implemented
-const state = nes.toJSON();
-nes.fromJSON(state);
-```
+For deep technical details, see **TECHNICAL.md**.
 
 ## Development Notes
 
@@ -122,25 +96,15 @@ The emulator uses a two-tier audio system:
 
 Audio samples are batched and sent to the worklet to minimize postMessage overhead.
 
-### Mapper Implementation
-
-Mappers handle the NES's bank switching hardware. Key implementation details:
-
-- **MMC2/MMC4**: Implement CHR latch switching triggered by specific tile fetches ($FD/$FE tiles)
-- **MMC3**: Implements scanline counter via A12 rising edge detection for IRQ timing
-- **MMC1**: Proper shift register with 5-write sequences
-
-See [TECHNICAL.md](TECHNICAL.md) for detailed implementation notes.
-
 ## Credits
 
 Based on [JSNES](https://github.com/bfirsh/jsnes) by Ben Firshman, which was based on vNES by Jamie Sanders.
 
-Modernization and mapper fixes contributed by Antonio Armstrong.
+Modernization and mapper fixes by the contributors to this fork.
 
 ## License
 
-This project uses the GPL v3 license.
+This project inherits the GPL v3 license.
 
 ## Legal
 
