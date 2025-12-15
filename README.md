@@ -106,7 +106,7 @@ AI Coding Assistance:
 - [ChatGPT](https://chatgpt.com/)
 - [Gemini](https://gemini.google.com/)
 - [Copilot](https://copilot.microsoft.com/)
-- [Grok](https://copilot.microsoft.com/)
+- [Grok](https://grok.com/)
 
 If you want to assist, please take a look at the technical document and give it a whirl!
 
