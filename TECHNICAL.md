@@ -1,17 +1,21 @@
 # JavaScript-NES Technical Documentation
 
-This document covers the internal architecture and key implementation details of the JavaScript-NES emulator.
+This document covers the internal architecture and key implementation details of the JavaScript-NES emulator, with emphasis on **correct hardware modeling** and the **capability‑driven mapper system**.
 
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [CPU (6502)](#cpu-6502)
-3. [PPU (Picture Processing Unit)](#ppu-picture-processing-unit)
-4. [APU (Audio Processing Unit)](#apu-audio-processing-unit)
-5. [Memory Mappers](#memory-mappers)
-6. [Audio System](#audio-system)
-7. [Save State System](#save-state-system)
-8. [Timing and Synchronization](#timing-and-synchronization)
+2. [PPU <-> Mapper Contract (Core Design)](#ppu--mapper-contract-core-design)
+3. [CPU (6502)](#cpu-6502)
+4. [PPU (Picture Processing Unit)](#ppu-picture-processing-unit)
+5. [APU (Audio Processing Unit)](#apu-audio-processing-unit)
+6. [Memory Mappers](#memory-mappers)
+7. [Audio System](#audio-system)
+8. [Save State System](#save-state-system)
+9. [Timing and Synchronization](#timing-and-synchronization)
+10. [Performance Optimizations](#performance-optimizations)
+11. [Debugging Guide](#debugging-guide)
+12. [References](#references)
 
 ---
 
@@ -29,6 +33,8 @@ The emulator follows a component-based design mirroring the NES hardware:
 └─────────────┴─────────────┴─────────────┴───────────────┘
 ```
 
+The **NES class** orchestrates timing and wiring. Each component is isolated and communicates through explicit, well‑defined interfaces.
+
 ### Frame Execution Flow
 
 ```javascript
@@ -42,6 +48,31 @@ The emulator follows a component-based design mirroring the NES hardware:
 3. PPU renders scanlines, triggers VBlank NMI
 4. Frame buffer sent to onFrame callback
 ```
+
+---
+
+## PPU ↔ Mapper Contract (Core Design)
+
+The PPU never checks mapper IDs or method presence. Instead, each mapper declares **what behaviors it supports** through capability flags. This design prevents common emulator pitfalls:
+
+- x Fixing one mapper breaking another
+- x Hidden method‑presence heuristics
+- x Mapper ID checks scattered through the PPU
+
+Instead, each mapper becomes **self‑contained**, and the PPU becomes **stable infrastructure**.
+
+### Behavioral Capability Flags
+
+| Capability Flag | Meaning | Required Method(s) |
+|----------------|--------|--------------------|
+| `hasChrLatch` | CHR latch switching (MMC2/MMC4) | `latchAccess(addr)` |
+| `hasScanlineIrq` | Scanline IRQ support | `notifyA12(value)` |
+| `hasPpuA13ChrSwitch` | BG vs sprite CHR mode (MMC5) | `notifyPpuA13(value)` |
+| `hasNametableOverride` | Custom nametable reads/writes | `readNametable(addr)`, `writeNametable(addr,val)` |
+| `hasPpuAddressHook` | Observe PPU address activity | `ppuAddressUpdate(addr)` |
+| `hasPpuScanlineHook` | End‑of‑scanline callback | `onEndScanline(scanline)` |
+
+**Rule:** If a capability flag is `true`, the corresponding method **must exist**.
 
 ---
 
@@ -106,6 +137,7 @@ The PPU renders 262 scanlines per frame:
 | $2005 | PPUSCROLL | Scroll position (write x2) |
 | $2006 | PPUADDR | VRAM address (write x2) |
 | $2007 | PPUDATA | VRAM read/write |
+---
 
 ### Sprite 0 Hit Detection
 
@@ -145,6 +177,8 @@ This ensures the latch state is correct before the first visible scanline.
 | Triangle | Triangle | Fixed waveform, no volume control |
 | Noise | Noise | Pseudo-random, two modes |
 | DMC | Sample | Delta-modulation playback |
+---
+
 
 ### Frame Counter
 
@@ -184,7 +218,8 @@ Used by many popular games including Super Mario Bros. 2, Super Mario Bros. 3, a
 - 1KB banks at $1000-$1C00 or $0000-$0C00
 
 **IRQ Counter:**
-The MMC3's scanline counter is clocked by A12 rising edges:
+
+MMC3 IRQs are driven by **A12 rising edges**, not by generic scanline counters. The PPU signals A12 state changes via `notifyA12(value)`, and the mapper detects rising edges to clock its IRQ counter. IRQs are isolated to mappers that declare `hasScanlineIrq`.
 
 ```javascript
 notifyA12(value) {
@@ -211,11 +246,24 @@ clockIrqCounter() {
 }
 ```
 
+---
+
 ### Mapper 9 (MMC2)
 
 Used exclusively by Punch-Out!! Features unique CHR latches.
 
 **Latch Mechanism:**
+
+MMC2 latch switching is triggered by **specific pattern fetch addresses**:
+- `$0FD8 / $0FE8` (low pattern table)
+- `$1FD8 / $1FE8` (high pattern table)
+
+To correctly emulate this behavior, the PPU computes **real pattern fetch addresses**:
+- `tileBase + (tileIndex << 4) + fineY`
+- and the second bitplane at `+ 8`
+
+Both background and sprite fetch paths call `latchAccess()`.
+
 Two latches control CHR bank selection. Latches change state when specific tiles ($FD or $FE) are fetched:
 
 ```javascript
@@ -247,11 +295,34 @@ latchAccess(address) {
 ```
 
 **Why This Matters:**
-Punch-Out!! uses this to animate large character sprites. The latch triggers mid-frame to swap CHR banks, creating smooth animation without CPU intervention.
+
+This is critical for games like **Mike Tyson's Punch‑Out!!**, which rely on mid‑frame CHR bank switching for large animated sprites. The latch triggers mid-frame to swap CHR banks, creating smooth animation without CPU intervention.
+
+---
 
 ### Mapper 10 (MMC4)
 
 Similar to MMC2 but with 16KB PRG banking instead of 8KB. Used by Fire Emblem and Famicom Wars.
+
+---
+
+### Mapper 5 (MMC5)
+
+MMC5 introduces advanced features:
+
+- Extended nametable mapping (ExRAM)
+- Fill‑mode backgrounds
+- Split‑screen scrolling
+- Separate BG and sprite CHR modes (A13)
+
+These features are enabled through capability flags:
+
+- `hasNametableOverride`
+- `hasPpuA13ChrSwitch`
+- `hasPpuAddressHook`
+- `hasPpuScanlineHook`
+
+The PPU remains mapper‑agnostic while still supporting MMC5's complexity.
 
 ---
 
@@ -274,6 +345,7 @@ Similar to MMC2 but with 16KB PRG banking instead of 8KB. Used by Fire Emblem an
 │                 │                              │  (128 samples)  │
 └─────────────────┘                              └─────────────────┘
 ```
+---
 
 ### Ring Buffer Implementation
 
@@ -294,6 +366,7 @@ this.readIndex = (this.readIndex + 1) & this.bufferMask;
 // Available samples
 available = (this.writeIndex - this.readIndex) & this.bufferMask;
 ```
+---
 
 ### Underrun Handling
 
@@ -307,6 +380,7 @@ if (i < available) {
   outputL[i] = lastL * fade;
 }
 ```
+---
 
 ### Fallback to ScriptProcessor
 
@@ -356,6 +430,7 @@ The save state system enables saving and restoring the complete emulator state.
 │  └─────────────────┘    └─────────────────┘                │
 └────────────────────────────────────────────────────────────┘
 ```
+---
 
 ### State Serialization
 
@@ -387,6 +462,7 @@ fromJSON(s) {
   fromJSON(this, s);    // utils.js helper
 }
 ```
+---
 
 ### Save State Format
 
@@ -403,6 +479,7 @@ fromJSON(s) {
   }
 }
 ```
+---
 
 ### Storage Locations
 
@@ -429,6 +506,7 @@ function getRomHash() {
   return hash.toString(16);
 }
 ```
+---
 
 This warns users when loading a save from a different ROM, but doesn't prevent it (useful for ROM hacks or regional variants).
 
@@ -487,6 +565,7 @@ async function nesBoot(romData) {
 | CPU | 1.789773 MHz | NTSC master clock / 12 |
 | PPU | 5.369318 MHz | 3x CPU clock |
 | APU Frame | 240 Hz | Controls envelope/sweep |
+---
 
 ### Frame Timing
 
@@ -494,6 +573,7 @@ At 60 FPS (NTSC):
 - ~29,780 CPU cycles per frame
 - ~89,342 PPU cycles per frame
 - ~735 audio samples per frame (at 44.1kHz)
+---
 
 ### requestAnimationFrame Loop
 
@@ -523,12 +603,14 @@ This ties emulation to the display refresh rate (~60Hz), which closely matches N
 2. **Typed arrays** — `Uint8Array` for memory
 3. **Bitwise operations** — Fast flag manipulation
 4. **Local variable caching** — Avoid repeated property access in hot loops
+---
 
 ### PPU Optimizations
 
 1. **Scanline-based rendering** — Only render visible portions
 2. **Dirty tile tracking** — Skip unchanged tiles
 3. **Shared ArrayBuffer** — Framebuffer backing for zero-copy canvas updates
+---
 
 ### Memory Layout
 
@@ -541,7 +623,7 @@ framebufferU32 = new Uint32Array(buffer);        // For fast pixel writes
 
 ---
 
-## Debugging Tips
+## Debugging Guide
 
 ### Common Issues
 
@@ -550,21 +632,29 @@ framebufferU32 = new Uint32Array(buffer);        // For fast pixel writes
 - Verify ROM header is valid (starts with "NES\x1a")
 
 **Garbled graphics:**
-- Likely mapper issue — check CHR bank switching
+- Almost always CHR banking or latch timing
+- Verify `hasChrLatch` and `latchAccess()` usage
 - Verify mirroring mode is correct
 
 **No audio:**
 - Check browser console for AudioContext errors
 - Ensure user interaction before audio init (browser autoplay policy)
 
-**Status bar shaking (MMC3 games):**
+**Status bar shaking / issues (MMC3):**
 - IRQ counter timing issue
-- Verify A12 rising edge detection
+- Verify A12 rising edges
+- Check IRQ counter reload timing
+
+**Split screen issues (MMC5):**
+- Verify `notifyPpuA13()` is called in both BG and sprite paths
+- Ensure ExRAM writes are gated correctly
 
 **Save state not loading:**
 - Check browser console for JSON parse errors
 - Verify ROM matches (check hash warning)
 - localStorage may be full — clear old saves
+---
+
 
 ### Useful Console Commands
 
@@ -586,5 +676,6 @@ localStorage                 // View raw storage
 
 - [NESDev Wiki](https://www.nesdev.org/wiki/) — Comprehensive NES hardware documentation
 - [6502 Instruction Reference](https://www.masswerk.at/6502/6502_instruction_set.html)
-- [MMC3 Documentation](https://www.nesdev.org/wiki/MMC3)
 - [MMC2 Documentation](https://www.nesdev.org/wiki/MMC2)
+- [MMC3 Documentation](https://www.nesdev.org/wiki/MMC3)
+- [MMC5 Documentation](https://www.nesdev.org/wiki/MMC5)
