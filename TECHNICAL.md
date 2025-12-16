@@ -5,9 +5,9 @@ This document covers the internal architecture and key implementation details of
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [PPU <-> Mapper Contract (Core Design)](#ppu--mapper-contract-core-design)
-3. [CPU (6502)](#cpu-6502)
-4. [PPU (Picture Processing Unit)](#ppu-picture-processing-unit)
+2. [CPU (6502)](#cpu-6502)
+3. [PPU (Picture Processing Unit)](#ppu-picture-processing-unit)
+4. [PPU <-> Mapper Contract (Core Design)](#ppu--mapper-contract-core-design)
 5. [APU (Audio Processing Unit)](#apu-audio-processing-unit)
 6. [Memory Mappers](#memory-mappers)
 7. [Audio System](#audio-system)
@@ -48,31 +48,6 @@ The **NES class** orchestrates timing and wiring. Each component is isolated and
 3. PPU renders scanlines, triggers VBlank NMI
 4. Frame buffer sent to onFrame callback
 ```
-
----
-
-## PPU ↔ Mapper Contract (Core Design)
-
-The PPU never checks mapper IDs or method presence. Instead, each mapper declares **what behaviors it supports** through capability flags. This design prevents common emulator pitfalls:
-
-- x Fixing one mapper breaking another
-- x Hidden method‑presence heuristics
-- x Mapper ID checks scattered through the PPU
-
-Instead, each mapper becomes **self‑contained**, and the PPU becomes **stable infrastructure**.
-
-### Behavioral Capability Flags
-
-| Capability Flag | Meaning | Required Method(s) |
-|----------------|--------|--------------------|
-| `hasChrLatch` | CHR latch switching (MMC2/MMC4) | `latchAccess(addr)` |
-| `hasScanlineIrq` | Scanline IRQ support | `notifyA12(value)` |
-| `hasPpuA13ChrSwitch` | BG vs sprite CHR mode (MMC5) | `notifyPpuA13(value)` |
-| `hasNametableOverride` | Custom nametable reads/writes | `readNametable(addr)`, `writeNametable(addr,val)` |
-| `hasPpuAddressHook` | Observe PPU address activity | `ppuAddressUpdate(addr)` |
-| `hasPpuScanlineHook` | End‑of‑scanline callback | `onEndScanline(scanline)` |
-
-**Rule:** If a capability flag is `true`, the corresponding method **must exist**.
 
 ---
 
@@ -139,6 +114,75 @@ The PPU renders 262 scanlines per frame:
 | $2007 | PPUDATA | VRAM read/write |
 ---
 
+---
+
+## PPU ↔ Mapper Contract (Core Design)
+
+The PPU never checks mapper IDs or method presence. Instead, each mapper declares **what behaviors it supports** through capability flags. This design prevents common emulator pitfalls:
+
+- x Fixing one mapper breaking another
+- x Hidden method‑presence heuristics
+- x Mapper ID checks scattered through the PPU
+
+Instead, each mapper becomes **self‑contained**, and the PPU becomes **stable infrastructure**.
+
+### Behavioral Capability Flags
+
+| Capability Flag | Meaning | Required Method(s) |
+|----------------|--------|--------------------|
+| `hasChrLatch` | CHR latch switching (MMC2/MMC4) | `latchAccess(addr)` |
+| `hasScanlineIrq` | Scanline IRQ support | `notifyA12(value)` |
+| `hasPpuA13ChrSwitch` | BG vs sprite CHR mode (MMC5) | `notifyPpuA13(value)` |
+| `hasNametableOverride` | Custom nametable reads/writes | `readNametable(addr)`, `writeNametable(addr,val)` |
+| `hasPpuAddressHook` | Observe PPU address activity | `ppuAddressUpdate(addr)` |
+| `hasPpuScanlineHook` | End‑of‑scanline callback | `onEndScanline(scanline)` |
+
+**Rule:** If a capability flag is `true`, the corresponding method **must exist**.
+
+---
+
+### Mid-Frame PPU State Changes (MMC5 and Similar Mappers)
+
+Some mappers (most notably **MMC5**) are capable of changing PPU-visible state during the visible portion of a frame. This includes (but is not limited to):
+
+- Switching between background and sprite CHR register sets
+- Changing CHR banking modes
+- Altering ExRAM interpretation (attributes / fill mode)
+
+To emulate this correctly **without mid-scanline corruption or PPU ↔ mapper re-entrancy**, the emulator enforces the following rule:
+
+> **If a mapper may change PPU-visible state mid-frame, rendering must be flushed at a scanline boundary *****before***** the mapper applies the change.**
+
+This behavior is explicit and capability-driven; it is never inferred implicitly.
+
+#### Capability Flag
+
+| Flag                    | Meaning                                                           |
+| ----------------------- | ----------------------------------------------------------------- |
+| `hasMidFramePpuChanges` | Mapper may alter PPU-visible state between scanlines (e.g., MMC5) |
+
+When this flag is set, the PPU performs a render flush at the end of each scanline **before** mapper scanline hooks are invoked.
+
+#### Authoritative Scanline Ordering
+
+At the end of every scanline, the PPU must perform operations in the following order:
+
+1. **Flush rendering** if the mapper has `hasMidFramePpuChanges` set *and* has marked PPU state dirty
+2. **Increment the scanline counter**
+3. **Invoke mapper scanline hooks** (for example, `onEndScanline(scanline)`)
+
+This ordering guarantees:
+
+- No CHR or ExRAM mutation occurs during active rendering
+- MMC5 split-screen / film-strip effects render correctly
+- Recursive rendering or stack overflow conditions cannot occur
+
+This rule replaces earlier implicit or accidental rendering flush behavior and is now treated as a **hard architectural invariant**.
+
+The PPU never checks mapper IDs or infers behavior implicitly. All mapper-specific behavior is expressed through **explicit capability flags** and **well-defined timing hooks**. This contract is especially critical for complex mappers such as **MMC5**, which can change PPU-visible state *mid-frame*.
+
+---
+
 ### Sprite 0 Hit Detection
 
 The sprite 0 hit flag is set when an opaque pixel of sprite 0 overlaps an opaque background pixel. This is used by games for split-screen effects.
@@ -163,6 +207,24 @@ if (this.f_spVisibility === 1) {
 ```
 
 This ensures the latch state is correct before the first visible scanline.
+
+---
+
+### MMC2 / MMC4 CHR Latch Accuracy
+
+MMC2/MMC4 latch switching is triggered by **specific pattern fetch addresses**:
+
+- `$0FD8 / $0FE8` (low pattern table)
+- `$1FD8 / $1FE8` (high pattern table)
+
+To correctly emulate this behavior:
+
+- The PPU computes **real pattern fetch addresses**:
+  - `tileBase + (tileIndex << 4) + fineY`
+  - and the second bitplane at `+ 8`
+- Both background and sprite fetch paths call `latchAccess()`
+
+This is critical for games like **Mike Tyson’s Punch‑Out!**, which rely on mid‑frame CHR bank switching for large animated sprites.
 
 ---
 
@@ -219,7 +281,17 @@ Used by many popular games including Super Mario Bros. 2, Super Mario Bros. 3, a
 
 **IRQ Counter:**
 
-MMC3 IRQs are driven by **A12 rising edges**, not by generic scanline counters. The PPU signals A12 state changes via `notifyA12(value)`, and the mapper detects rising edges to clock its IRQ counter. IRQs are isolated to mappers that declare `hasScanlineIrq`.
+MMC3 IRQs are driven by **A12 rising edges**, not by generic scanline counters.
+
+**Implementation Notes:**
+
+- The PPU signals A12 state changes via `notifyA12(value)`
+- The mapper detects rising edges to clock its IRQ counter.
+- IRQs are isolated to mappers that declare `hasScanlineIrq`.
+
+This prevents MMC3 timing logic from affecting other mappers.
+
+---
 
 ```javascript
 notifyA12(value) {
@@ -245,7 +317,6 @@ clockIrqCounter() {
   }
 }
 ```
-
 ---
 
 ### Mapper 9 (MMC2)
@@ -265,6 +336,12 @@ To correctly emulate this behavior, the PPU computes **real pattern fetch addres
 Both background and sprite fetch paths call `latchAccess()`.
 
 Two latches control CHR bank selection. Latches change state when specific tiles ($FD or $FE) are fetched:
+
+**Why This Matters:**
+
+This is critical for games like **Mike Tyson's Punch‑Out!!**, which rely on mid‑frame CHR bank switching for large animated sprites. The latch triggers mid-frame to swap CHR banks, creating smooth animation without CPU intervention.
+
+---
 
 ```javascript
 latchAccess(address) {
@@ -293,11 +370,6 @@ latchAccess(address) {
   }
 }
 ```
-
-**Why This Matters:**
-
-This is critical for games like **Mike Tyson's Punch‑Out!!**, which rely on mid‑frame CHR bank switching for large animated sprites. The latch triggers mid-frame to swap CHR banks, creating smooth animation without CPU intervention.
-
 ---
 
 ### Mapper 10 (MMC4)
@@ -623,6 +695,18 @@ framebufferU32 = new Uint32Array(buffer);        // For fast pixel writes
 
 ---
 
+## Why Capability‑Driven Design Matters
+
+This design prevents common emulator pitfalls:
+
+- x Fixing one mapper breaking another
+- x Hidden method‑presence heuristics
+- x Mapper ID checks scattered through the PPU
+
+Instead, each mapper becomes **self‑contained**, and the PPU becomes **stable infrastructure**.
+
+---
+
 ## Debugging Guide
 
 ### Common Issues
@@ -640,7 +724,7 @@ framebufferU32 = new Uint32Array(buffer);        // For fast pixel writes
 - Check browser console for AudioContext errors
 - Ensure user interaction before audio init (browser autoplay policy)
 
-**Status bar shaking / issues (MMC3):**
+**Status Bar Issues (MMC3):**
 - IRQ counter timing issue
 - Verify A12 rising edges
 - Check IRQ counter reload timing
