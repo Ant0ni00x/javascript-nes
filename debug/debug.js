@@ -74,36 +74,36 @@ export class NESDebug {
         // $2000 - PPUCTRL
         const ppuCtrl = cpu.mem[0x2000];
         console.log(`PPUCTRL    $2000 = $${this.hex(ppuCtrl)}`);
-        console.log(`  Nametable Base:     ${ppu.f_nTblAddress} (${['$2000', '$2400', '$2800', '$2C00'][ppu.f_nTblAddress]})`);
-        console.log(`  VRAM Increment:     ${ppu.f_addrInc} (${ppu.f_addrInc ? '+32 (down)' : '+1 (across)'})`);
-        console.log(`  Sprite Pattern:     ${ppu.f_spPatternTable} ($${ppu.f_spPatternTable ? '1000' : '0000'})`);
-        console.log(`  BG Pattern:         ${ppu.f_bgPatternTable} ($${ppu.f_bgPatternTable ? '1000' : '0000'})`);
-        console.log(`  Sprite Size:        ${ppu.f_spriteSize} (${ppu.f_spriteSize ? '8x16' : '8x8'})`);
-        console.log(`  NMI Enable:         ${ppu.f_nmiOnVblank}`);
+        console.log(`  Nametable Base:                        = ${ppu.f_nTblAddress} (${['$2000', '$2400', '$2800', '$2C00'][ppu.f_nTblAddress]})`);
+        console.log(`  $2000.2: - VRAM Increment:             = ${ppu.f_addrInc} (${ppu.f_addrInc ? '+32 (down)' : '+1 (across)'})`);
+        console.log(`  $2000.3: - Sprite Table Address:       = ${ppu.f_spPatternTable} ($${ppu.f_spPatternTable ? '1000' : '0000'})`);
+        console.log(`  $2000.4: - BG Table Address:           = ${ppu.f_bgPatternTable} ($${ppu.f_bgPatternTable ? '1000' : '0000'})`);
+        console.log(`  $2000.5: - Sprite Size:                = ${ppu.f_spriteSize} (${ppu.f_spriteSize ? '8x16' : '8x8'})`);
+        console.log(`  $2000.7: - NMI Enable:                 = ${ppu.f_nmiOnVblank}`);
 
         // $2001 - PPUMASK
         const ppuMask = cpu.mem[0x2001];
         console.log(`PPUMASK    $2001 = $${this.hex(ppuMask)}`);
-        console.log(`  Grayscale:          ${ppu.f_grayscale}`);
-        console.log(`  Show BG Left 8:     ${ppu.f_bgClipping}`);
-        console.log(`  Show Sprite Left 8: ${ppu.f_spClipping}`);
-        console.log(`  Show BG:            ${ppu.f_bgVisibility}`);
-        console.log(`  Show Sprites:       ${ppu.f_spVisibility}`);
-        console.log(`  Emphasis:           R=${ppu.f_colorEmphasis & 1} G=${(ppu.f_colorEmphasis >> 1) & 1} B=${(ppu.f_colorEmphasis >> 2) & 1}`);
+        console.log(`  $2001.0:   - Grayscale:                = ${ppu.f_grayscale}`);
+        console.log(`  $2001.1:   - BG Leftmost 8 Pixels:     = ${ppu.f_bgClipping}`);
+        console.log(`  $2001.2:   - Sprite Leftmost 8 Pixels: = ${ppu.f_spClipping}`);
+        console.log(`  $2001.3:   - Background Enabled:       = ${ppu.f_bgVisibility}`);
+        console.log(`  $2001.4:   - Sprites Enabled:          = ${ppu.f_spVisibility}`);
+        console.log(`  $2001.5-7: - Emphasis:                 = R=${ppu.f_colorEmphasis & 1} G=${(ppu.f_colorEmphasis >> 1) & 1} B=${(ppu.f_colorEmphasis >> 2) & 1}`);
 
         // $2002 - PPUSTATUS
         const status = ppu.readStatusRegister ? ppu.readStatusRegister() : 0;
         console.log(`PPUSTATUS  $2002 = $${this.hex(status)} (read clears vblank)`);
-        console.log(`  Sprite Overflow:    ${(status >> 5) & 1}`);
-        console.log(`  Sprite 0 Hit:       ${(status >> 6) & 1}`);
-        console.log(`  VBlank:             ${(status >> 7) & 1}`);
+        console.log(`  $2002.5: - Sprite Overflow:  = ${(status >> 5) & 1}`);
+        console.log(`  $2002.6: - Sprite 0 Hit:     = ${(status >> 6) & 1}`);
+        console.log(`  $2002.7: - VBlank:           = ${(status >> 7) & 1}`);
 
         // $2003 - OAMADDR
-        console.log(`OAMADDR    $2003 = $${this.hex(ppu.sramAddress || 0)}`);
+        console.log(`$2003: - OAMADDR               = $${this.hex(ppu.sramAddress || 0)}`);
 
         // $2004 - OAMDATA (current byte at OAMADDR)
         const oamData = ppu.spriteMem ? ppu.spriteMem[ppu.sramAddress || 0] : 0;
-        console.log(`OAMDATA    $2004 = $${this.hex(oamData)} (at OAMADDR)`);
+        console.log(`$2004: - OAMDATA               = $${this.hex(oamData)} (at OAMADDR)`);
 
         // $2005 - PPUSCROLL
         console.log(`PPUSCROLL  $2005`);
@@ -257,6 +257,13 @@ export class NESDebug {
             return;
         }
         
+        // For the Decimal values to match to Mesen Output
+        function hexToDecimal(hexString) {
+            return parseInt(hexString, 16);
+        }
+        // Example usage:  
+        //console.log(hexToDecimal("7F"));
+
         console.log('\n--- MMC5 State ---');
         
         // PRG Mode $5100
@@ -296,18 +303,11 @@ export class NESDebug {
         
         // PRG Banks $5113-$5117
         console.log(`PRG Banks:`);
-        console.log(`  $5113: (RAM):   $${this.hex(mmap.prgBanks[0])}`);
-        console.log(`  $5114: ($8000): $${this.hex(mmap.prgBanks[1])} ${(mmap.prgBanks[1] & 0x80) ? 'ROM' : 'RAM'}`);
-        console.log(`  $5115: ($A000): $${this.hex(mmap.prgBanks[2])} ${(mmap.prgBanks[2] & 0x80) ? 'ROM' : 'RAM'}`);
-        console.log(`  $5116: ($C000): $${this.hex(mmap.prgBanks[3])} ${(mmap.prgBanks[3] & 0x80) ? 'ROM' : 'RAM'}`);
-        console.log(`  $5117: ($E000): $${this.hex(mmap.prgBanks[4])} ROM (always)`);
-        
-        // For the CHR Banks match to Mesen Output
-        function hexToDecimal(hexString) {
-            return parseInt(hexString, 16);
-        }
-        // Example usage:  
-        //console.log(hexToDecimal("7F"));
+        console.log(`  $5113: PRG Bank Register 0  (RAM):   $${this.hex(mmap.prgBanks[0])}      Value: ${hexToDecimal(this.hex16(mmap.prgBanks[0]))}`);
+        console.log(`  $5114: PRG Bank Register 1  ($8000): $${this.hex(mmap.prgBanks[1])}      Value: ${hexToDecimal(this.hex16(mmap.prgBanks[1]))}   ${(mmap.prgBanks[1] & 0x80) ? 'ROM' : 'RAM'}`);
+        console.log(`  $5115: PRG Bank Register 2  ($A000): $${this.hex(mmap.prgBanks[2])}      Value: ${hexToDecimal(this.hex16(mmap.prgBanks[2]))}   ${(mmap.prgBanks[2] & 0x80) ? 'ROM' : 'RAM'}`);
+        console.log(`  $5116: PRG Bank Register 3  ($C000): $${this.hex(mmap.prgBanks[3])}      Value: ${hexToDecimal(this.hex16(mmap.prgBanks[3]))}   ${(mmap.prgBanks[3] & 0x80) ? 'ROM' : 'RAM'}`);
+        console.log(`  $5117: PRG Bank Register 4  ($E000): $${this.hex(mmap.prgBanks[4])}      Value: ${hexToDecimal(this.hex16(mmap.prgBanks[4]))}   ROM (always)`);
 
         // CHR Banks $5120-$512B
         console.log(`CHR Banks (A - BG):`);
@@ -330,20 +330,40 @@ export class NESDebug {
         console.log(`  $5200.0-4 - Delimiter Tile:    = ${mmap.verticalSplitDelimiterTile}`);
         console.log(`  $5200.6   - Right Side:        = ${mmap.verticalSplitRightSide ? 'True' : 'False'}`);
         console.log(`  $5200.7   - Enabled:           = ${mmap.verticalSplitEnabled}`);
-        console.log(`  $5201     - Scroll:            = $${this.hex(mmap.verticalSplitScroll)}`);
-        console.log(`  $5202     - Bank:              = $${this.hex(mmap.verticalSplitBank)}`);
+        console.log(`$5201       - Scroll:            = $${this.hex(mmap.verticalSplitScroll)}`);
+        console.log(`$5202       - Bank:              = $${this.hex(mmap.verticalSplitBank)}`);
         
         // IRQ $5203/$5204
-        console.log(`$5203 - IRQ Counter Target:      = Value: ${mmap.irqCounterTarget} - (Hex: $${this.hex(mmap.irqCounterTarget)})`);
+        console.log(`$5203 - IRQ Counter Target:      = Value: ${mmap.irqCounterTarget}  -  (Hex: $${this.hex(mmap.irqCounterTarget)})`);
         const irqStatus = (mmap.ppuInFrame ? 0x40 : 0) | (mmap.irqPending ? 0x80 : 0);
         console.log(`$5204   - IRQ Status:            = $${this.hex(irqStatus)}`);
         console.log(`$5204.7 - IRQ Enabled:           = ${mmap.irqEnabled}`);
-        console.log(`$5205   - Multiplcand            = $${this.hex(mmap.multiplierValue1)}`);
-        console.log(`$5205   - Multiplier             = $${this.hex(mmap.multiplierValue2)}`);
+
+        // MMC5 multiply: $5205 (multiplicand) * $5206 (multiplier) => 16-bit result
+        const toByte = (v) => {
+            if (typeof v === 'number') return (v | 0) & 0xFF;
+            if (typeof v === 'string') {
+                // Accept "$xx", "0xxx", or decimal strings
+                const s = v.trim().replace(/^\$/, '0x');
+                const n = Number(s);
+                if (Number.isFinite(n)) return (n | 0) & 0xFF;
+                const p = parseInt(s, 16);
+                return Number.isFinite(p) ? (p & 0xFF) : 0;
+            }
+            // undefined/null/objects -> 0
+            return 0;
+        };
+
+        const a = toByte(mmap.multiplierValue1);
+        const b = toByte(mmap.multiplierValue2);
+        const product = (a * b) & 0xFFFF;
+
+        console.log(`$5205   - Multiplcant            = $${this.hex(a)}`);
+        console.log(`$5206   - Multiplier             = $${this.hex(b)}`);
+
         // Multiplier $5205/$5206
-        const product = mmap.multiplierValue1 * mmap.multiplierValue2;
-        console.log(`$5205/6 - Multiplication Result: = $${this.hex(mmap.multiplierValue1)} × $${this.hex(mmap.multiplierValue2)} = $${this.hex16(product)} (${product})`);
-      
+        console.log(`$5205/6 - Multiplication Result: = Hex: $${this.hex16(product)}  -  Value: (${product})`);
+
         console.log(`  IRQ Pending:                   = ${mmap.irqPending}`);
         console.log(`  In Frame:                      = ${mmap.ppuInFrame}`);
         console.log(`  Scanline:                      = ${mmap.scanlineCounter}`);
