@@ -1,4 +1,4 @@
-# NES Debug Module Integration Guide
+# JavaScript-NES Debug Module Integration Guide
 
 ## Quick Start
 
