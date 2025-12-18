@@ -2,7 +2,7 @@
 
 ## Quick Start
 
-### 1. Add to your main entry point (e.g., `index.js` or `nes.js`)
+### 1. Add to your main entry point (e.g., `nes.js`)
 
 ```javascript
 import { initDebug } from './debug.js';
