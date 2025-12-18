@@ -26,7 +26,7 @@ export class NESDebug {
                 this.outputAll();
             }
         });
-        console.log(`[NESDebug] Press ${key} to output debug data`);
+        console.log(`[JavaScript-NES Debug] Press ${key} to output debug data`);
     }
 
     /**
@@ -34,7 +34,7 @@ export class NESDebug {
      */
     outputAll() {
         console.log('\n' + '='.repeat(60));
-        console.log('NES DEBUG OUTPUT - ' + new Date().toISOString());
+        console.log('JAVASCRIPT-NES DEBUG OUTPUT - ' + new Date().toISOString());
         console.log('='.repeat(60));
 
         this.outputCHR();
@@ -260,20 +260,20 @@ export class NESDebug {
         console.log('\n--- MMC5 State ---');
         
         // PRG Mode $5100
-        console.log(`PRG Mode       $5100 = ${mmap.prgMode}`);
+        console.log(`$5100: - PRG Mode       = ${mmap.prgMode}`);
         console.log(`  Mode ${mmap.prgMode}: ${['32KB', '16KB+16KB', '16KB+8KB+8KB', '8KB×4'][mmap.prgMode]}`);
         
         // CHR Mode $5101
-        console.log(`CHR Mode       $5101 = ${mmap.chrMode}`);
+        console.log(`$5101: - CHR Mode       = ${mmap.chrMode}`);
         console.log(`  Mode ${mmap.chrMode}: ${['8KB', '4KB×2', '2KB×4', '1KB×8'][mmap.chrMode]}`);
         
         // PRG RAM Protect $5102/$5103
-        console.log(`PRG RAM Prot1  $5102 = $${this.hex(mmap.prgRamProtect1)}`);
-        console.log(`PRG RAM Prot2  $5103 = $${this.hex(mmap.prgRamProtect2)}`);
+        console.log(`$5102: - PRG RAM Prot1  = $${this.hex(mmap.prgRamProtect1)}`);
+        console.log(`$5103: - PRG RAM Prot2  = $${this.hex(mmap.prgRamProtect2)}`);
         console.log(`  Write Enabled: ${mmap.prgRamProtect1 === 0x02 && mmap.prgRamProtect2 === 0x01}`);
         
         // ExRAM Mode $5104
-        console.log(`ExRAM Mode     $5104 = ${mmap.extendedRamMode}`);
+        console.log(`$5104: - ExRAM Mode     = ${mmap.extendedRamMode}`);
         const exRamModes = [
             '0: Write-only (NT data)',
             '1: Extended Attributes',
@@ -283,7 +283,7 @@ export class NESDebug {
         console.log(`  ${exRamModes[mmap.extendedRamMode]}`);
         
         // Nametable Mapping $5105
-        console.log(`NT Mapping     $5105 = $${this.hex(mmap.nametableMapping)}`);
+        console.log(`$5105: - NT Mapping     = $${this.hex(mmap.nametableMapping)}`);
         const ntSources = ['CIRAM 0', 'CIRAM 1', 'ExRAM', 'Fill'];
         for (let i = 0; i < 4; i++) {
             const src = (mmap.nametableMapping >> (i * 2)) & 0x03;
@@ -291,51 +291,64 @@ export class NESDebug {
         }
         
         // Fill Mode $5106/$5107
-        console.log(`Fill Tile      $5106 = $${this.hex(mmap.fillModeTile)}`);
-        console.log(`Fill Attribute $5107 = $${this.hex(mmap.fillModeColor)}`);
+        console.log(`$5106: - Fill Mode Tile        = $${this.hex(mmap.fillModeTile)}`);
+        console.log(`$5107: - Fill Attribute/Color  = $${this.hex(mmap.fillModeColor)}`);
         
         // PRG Banks $5113-$5117
         console.log(`PRG Banks:`);
-        console.log(`  $5113 (RAM):   $${this.hex(mmap.prgBanks[0])}`);
-        console.log(`  $5114 ($8000): $${this.hex(mmap.prgBanks[1])} ${(mmap.prgBanks[1] & 0x80) ? 'ROM' : 'RAM'}`);
-        console.log(`  $5115 ($A000): $${this.hex(mmap.prgBanks[2])} ${(mmap.prgBanks[2] & 0x80) ? 'ROM' : 'RAM'}`);
-        console.log(`  $5116 ($C000): $${this.hex(mmap.prgBanks[3])} ${(mmap.prgBanks[3] & 0x80) ? 'ROM' : 'RAM'}`);
-        console.log(`  $5117 ($E000): $${this.hex(mmap.prgBanks[4])} ROM (always)`);
+        console.log(`  $5113: (RAM):   $${this.hex(mmap.prgBanks[0])}`);
+        console.log(`  $5114: ($8000): $${this.hex(mmap.prgBanks[1])} ${(mmap.prgBanks[1] & 0x80) ? 'ROM' : 'RAM'}`);
+        console.log(`  $5115: ($A000): $${this.hex(mmap.prgBanks[2])} ${(mmap.prgBanks[2] & 0x80) ? 'ROM' : 'RAM'}`);
+        console.log(`  $5116: ($C000): $${this.hex(mmap.prgBanks[3])} ${(mmap.prgBanks[3] & 0x80) ? 'ROM' : 'RAM'}`);
+        console.log(`  $5117: ($E000): $${this.hex(mmap.prgBanks[4])} ROM (always)`);
         
-       // CHR Upper Bits $5130
-        console.log(`CHR Upper Bits $5130 = ${mmap.chrUpperBits}`);
-        
+        // For the CHR Banks match to Mesen Output
+        function hexToDecimal(hexString) {
+            return parseInt(hexString, 16);
+        }
+        // Example usage:  
+        //console.log(hexToDecimal("7F"));
+
         // CHR Banks $5120-$512B
         console.log(`CHR Banks (A - BG):`);
         for (let i = 0; i < 8; i++) {
-            console.log(`  $512${i.toString(16).toUpperCase()}: $${this.hex16(mmap.chrBanks[i])}`);
+            console.log(`  $512${i.toString(16).toUpperCase()}: CHR Bank Register ${i}     = Hex: $${this.hex16(mmap.chrBanks[i])}   Value: ${hexToDecimal(this.hex16(mmap.chrBanks[i]))}`);
         }
         console.log(`CHR Banks (B - Sprites 8x16):`);
-        for (let i = 8; i < 12; i++) {
-            console.log(`  $512${i.toString(16).toUpperCase()}: $${this.hex16(mmap.chrBanks[i])}`);
+        for (let i = 8; i < 10; i++) {
+            console.log(`  $512${i.toString(16).toUpperCase()}: CHR Bank Register ${i}     = Hex: $${this.hex16(mmap.chrBanks[i])}   Value: ${hexToDecimal(this.hex16(mmap.chrBanks[i]))}`);
+        }
+        for (let i = 10; i < 12; i++) {
+            console.log(`  $512${i.toString(16).toUpperCase()}: CHR Bank Register ${i}    = Hex: $${this.hex16(mmap.chrBanks[i])}   Value: ${hexToDecimal(this.hex16(mmap.chrBanks[i]))}`);
         }
 
+        // CHR Upper Bits $5130
+        console.log(`$5130: - CHR Upper Bits = ${mmap.chrUpperBits}`);
+        
         // Vertical Split $5200-$5202
-        console.log(`$5200 - Vertical Split Control = $${this.hex((mmap.verticalSplitEnabled ? 0x80 : 0) | (mmap.verticalSplitRightSide ? 0x40 : 0) | mmap.verticalSplitDelimiterTile)}`);
-        console.log(`  $5200.0-4 - Delimiter Tile:  = ${mmap.verticalSplitDelimiterTile}`);
-        console.log(`  $5200.6   - Right Side:      = ${mmap.verticalSplitRightSide ? 'True' : 'False'}`);
-        console.log(`  $5200.7   - Enabled:         = ${mmap.verticalSplitEnabled}`);
-        console.log(`  $5201     - Scroll:          = $${this.hex(mmap.verticalSplitScroll)}`);
-        console.log(`  $5202     - Bank:            = $${this.hex(mmap.verticalSplitBank)}`);
+        console.log(`$5200 - Vertical Split Control   = $${this.hex((mmap.verticalSplitEnabled ? 0x80 : 0) | (mmap.verticalSplitRightSide ? 0x40 : 0) | mmap.verticalSplitDelimiterTile)}`);
+        console.log(`  $5200.0-4 - Delimiter Tile:    = ${mmap.verticalSplitDelimiterTile}`);
+        console.log(`  $5200.6   - Right Side:        = ${mmap.verticalSplitRightSide ? 'True' : 'False'}`);
+        console.log(`  $5200.7   - Enabled:           = ${mmap.verticalSplitEnabled}`);
+        console.log(`  $5201     - Scroll:            = $${this.hex(mmap.verticalSplitScroll)}`);
+        console.log(`  $5202     - Bank:              = $${this.hex(mmap.verticalSplitBank)}`);
         
         // IRQ $5203/$5204
-        console.log(`$5203 - IRQ Counter Target:    = Value: ${mmap.irqCounterTarget} - (Hex: $${this.hex(mmap.irqCounterTarget)})`);
+        console.log(`$5203 - IRQ Counter Target:      = Value: ${mmap.irqCounterTarget} - (Hex: $${this.hex(mmap.irqCounterTarget)})`);
         const irqStatus = (mmap.ppuInFrame ? 0x40 : 0) | (mmap.irqPending ? 0x80 : 0);
-        console.log(`$5204   - IRQ Status:          = $${this.hex(irqStatus)}`);
-        console.log(`$5204.7 - IRQ Enabled:         = ${mmap.irqEnabled}`);
-        console.log(`  IRQ Pending:                 = ${mmap.irqPending}`);
-        console.log(`  In Frame:                    = ${mmap.ppuInFrame}`);
-        console.log(`  Scanline:                    = ${mmap.scanlineCounter}`);
-        
+        console.log(`$5204   - IRQ Status:            = $${this.hex(irqStatus)}`);
+        console.log(`$5204.7 - IRQ Enabled:           = ${mmap.irqEnabled}`);
+        console.log(`$5205   - Multiplcand            = $${this.hex(mmap.multiplierValue1)}`);
+        console.log(`$5205   - Multiplier             = $${this.hex(mmap.multiplierValue2)}`);
         // Multiplier $5205/$5206
         const product = mmap.multiplierValue1 * mmap.multiplierValue2;
-        console.log(`$5205/6 - Multiplier/Multiplication Result: = $${this.hex(mmap.multiplierValue1)} × $${this.hex(mmap.multiplierValue2)} = $${this.hex16(product)} (${product})`);
+        console.log(`$5205/6 - Multiplication Result: = $${this.hex(mmap.multiplierValue1)} × $${this.hex(mmap.multiplierValue2)} = $${this.hex16(product)} (${product})`);
+      
+        console.log(`  IRQ Pending:                   = ${mmap.irqPending}`);
+        console.log(`  In Frame:                      = ${mmap.ppuInFrame}`);
+        console.log(`  Scanline:                      = ${mmap.scanlineCounter}`);
         
+          
         // ExRAM sample
         console.log(`ExRAM ($5C00-$5FFF) - First 64 bytes:`);
         console.log(this.formatMemoryBlock(mmap.exRam, 0, 64));
